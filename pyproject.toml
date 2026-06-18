@@ -1,0 +1,67 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "icoscope"
+version = "0.1.0"
+description = "Interactive 3D viewer for icosahedral (DYNAMICO/ICOLMDZ) hex/pent grids on a sphere."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [
+  { name = "Victor Arrial", email = "114838851+ArrialVictor@users.noreply.github.com" },
+]
+keywords = ["icosahedral", "climate", "visualization", "DYNAMICO", "LMDZ", "atmospheric", "geodesic"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Science/Research",
+  "Topic :: Scientific/Engineering :: Atmospheric Science",
+  "Topic :: Scientific/Engineering :: Visualization",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: MacOS",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+]
+dependencies = [
+  "numpy>=1.24",
+  "pyvista>=0.43",
+  "pyvistaqt>=0.11",
+  "qtpy>=2.4",
+  "PyQt6>=6.5",
+  "netCDF4>=1.6",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "ruff"]
+
+[project.scripts]
+icoscope = "icoscope.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/ArrialVictor/IcoScope"
+Issues = "https://github.com/ArrialVictor/IcoScope/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/icoscope"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM"]
+ignore = [
+  "E501",   # line too long — handled by formatter / line-length above
+  "E741",   # ambiguous variable names (l for lon, etc.)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["B018"]            # allow bare assertions
+"src/icoscope/app.py" = ["SIM108"]   # if/else can be clearer than ternary here
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

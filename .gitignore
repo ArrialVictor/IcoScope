@@ -1,0 +1,38 @@
+# Python build / install
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+build/
+dist/
+.venv/
+venv/
+.eggs/
+pip-wheel-metadata/
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+*.swp
+
+# Local-only git hooks (kept outside the repo on purpose)
+.githooks/
+
+# Test / lint / cache
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Local data / cache
+*.nc
+.cache/
+test_grid.nc
+
+# Screenshots / exports the user may generate
+icoscope_*.png
+icoscope_*.svg
+screenshot*.png
