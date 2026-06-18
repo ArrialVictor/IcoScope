@@ -2,7 +2,7 @@
 
 All notable changes are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [0.1.0] — unreleased
+## [0.1.0] — 2026-06-18 (alpha)
 
 First public release.
 
