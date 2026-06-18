@@ -35,6 +35,36 @@ Alternatively, inside any environment of your choice:
 pip install git+https://github.com/ArrialVictor/IcoScope
 ```
 
+## Upgrade
+
+When a new release is out, re-run the same install command with an upgrade flag.
+
+With `pipx`:
+
+```bash
+pipx upgrade icoscope
+```
+
+With `pip`:
+
+```bash
+pip install --upgrade git+https://github.com/ArrialVictor/IcoScope
+```
+
+## Uninstall
+
+With `pipx`:
+
+```bash
+pipx uninstall icoscope
+```
+
+With `pip`:
+
+```bash
+pip uninstall icoscope
+```
+
 ## Use
 
 ```bash
