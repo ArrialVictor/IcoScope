@@ -20,6 +20,11 @@ pip-wheel-metadata/
 # Local-only git hooks (kept outside the repo on purpose)
 .githooks/
 
+# Local-only files (single-underscore prefix); see _REGISTRY.md.
+# Pre-commit hook also blocks these. Python dunders (__init__.py, ...) re-allowed.
+_*
+!__*
+
 # Test / lint / cache
 .pytest_cache/
 .ruff_cache/
