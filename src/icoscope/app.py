@@ -753,9 +753,29 @@ class MainWindow(QMainWindow):
         self._cell_locator = None
         self._clear_highlight()
         self.panel.disable_n(True)
-        self.panel.set_file_path(path)
+        self._sync_file_info(path)
         self._build_scene()
         self._update_status()
+
+    def _sync_file_info(self, path: str):
+        """Populate the File tab summary from the currently-loaded file."""
+        from .loader import read_global_attrs
+        n_time = max(
+            (meta["shape"][0] for meta in self.file_fields.values()
+             if meta.get("time_varying")),
+            default=0,
+        )
+        try:
+            attrs = read_global_attrs(path)
+        except Exception:
+            attrs = {}
+        self.panel.set_file_info(
+            path=path,
+            n_cells=len(self.cells),
+            n_fields=len(self.file_fields),
+            n_time_steps=n_time,
+            attrs=attrs,
+        )
 
     def _on_close_file(self):
         """Drop the loaded file and return to the synthetic grid."""
@@ -767,7 +787,7 @@ class MainWindow(QMainWindow):
         self.color_by = "None"
         self.panel.set_time_steps(0)
         self.panel.disable_n(False)
-        self.panel.set_file_path("")
+        self.panel.set_file_info()
         self._regen_synthetic()
 
     def _on_time_changed(self, idx):
@@ -906,7 +926,7 @@ def run(verts, cells, centers, initial_n=8, relax=True, file_path=None,
         w._refresh_scalars()
         w._mesh = w._to_polydata()
         w.panel.disable_n(True)
-        w.panel.set_file_path(file_path)
+        w._sync_file_info(file_path)
         w._build_scene()
         w._update_status()
     w.show()

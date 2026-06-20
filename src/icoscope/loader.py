@@ -118,6 +118,19 @@ def load_grid(
     return verts, cells, centers, fields
 
 
+def read_global_attrs(path: str | Path) -> dict[str, str]:
+    """Return the NetCDF file's global attributes as a ``{name: str}`` dict.
+
+    Only string-valued attributes are kept; non-string values are coerced via
+    ``str()``. Missing or unreadable files raise; absent attributes simply
+    don't appear in the returned dict.
+    """
+    from netCDF4 import Dataset
+
+    with Dataset(path) as ds:
+        return {name: str(ds.getncattr(name)) for name in ds.ncattrs()}
+
+
 def read_field(path: str | Path, name: str, time_index: int = 0) -> np.ndarray:
     """Read a field's values. Returns a 1-D array of length ``n_cells``.
 
