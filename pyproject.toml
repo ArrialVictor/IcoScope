@@ -53,15 +53,24 @@ line-length = 100
 target-version = "py310"
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "I", "UP", "B", "SIM"]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "D"]
 ignore = [
   "E501",   # line too long — handled by formatter / line-length above
   "E741",   # ambiguous variable names (l for lon, etc.)
+  "D105",   # magic-method docstrings not required
+  "D107",   # __init__ docstring not required — class docstring covers it
+  "D203",   # conflicts with D211 (no blank line before class docstring)
+  "D213",   # conflicts with D212 (multi-line summary on first line)
+  "D401",   # imperative mood — defer; enable later if desired
 ]
 
+[tool.ruff.lint.pydocstyle]
+convention = "numpy"
+
 [tool.ruff.lint.per-file-ignores]
-"tests/*" = ["B018"]            # allow bare assertions
-"src/icoscope/app.py" = ["SIM108"]   # if/else can be clearer than ternary here
+"tests/*" = ["B018", "D"]                       # bare asserts; no D-rules in tests
+"src/icoscope/app.py" = ["SIM108"]              # if/else can be clearer than ternary here
+"tools/*" = ["D"]                               # one-off scripts; not user-facing
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

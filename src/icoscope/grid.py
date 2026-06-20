@@ -16,7 +16,8 @@ PHI = (1 + np.sqrt(5)) / 2
 class GoldbergGrid(NamedTuple):
     """The output of :func:`goldberg`.
 
-    Attributes:
+    Attributes
+    ----------
         verts:   (V, 3) array of dual-cell corner positions on the unit sphere.
         cells:   list of length C, where ``cells[i]`` is a list of vertex
                  indices forming cell *i* (length 5 for pentagons, 6 for
@@ -24,6 +25,7 @@ class GoldbergGrid(NamedTuple):
         centers: (C, 3) array of cell-center positions on the unit sphere.
         iters:   relaxation iterations actually used (0 when ``relax=False``).
     """
+
     verts: np.ndarray
     cells: list[list[int]]
     centers: np.ndarray

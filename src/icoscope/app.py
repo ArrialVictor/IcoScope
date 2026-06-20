@@ -35,6 +35,8 @@ SYNTHETIC_COLOR_BY = [
 
 
 class MainWindow(QMainWindow):
+    """Top-level IcoScope window: 3D sphere view + right-side control panel."""
+
     def __init__(self, verts, cells, centers, initial_n=8, relax=True):
         super().__init__()
         self.setWindowTitle("IcoScope")
@@ -368,6 +370,7 @@ class MainWindow(QMainWindow):
         iren_widget.installEventFilter(self)
 
     def eventFilter(self, obj, event):
+        """Translate trackpad pinch gestures into camera roll / dolly / pan."""
         if event.type() == QEvent.Type.Gesture:
             g = event.gesture(Qt.GestureType.PinchGesture)
             if g is not None:
@@ -856,6 +859,7 @@ class MainWindow(QMainWindow):
 
 
 def run(verts, cells, centers, initial_n=8, relax=True, file_path=None):
+    """Create the QApplication, show the main window, and start the Qt event loop."""
     app = QApplication.instance() or QApplication(sys.argv)
     # Set the icon on the QApplication BEFORE any window appears — that's the
     # only way macOS picks it up for the dock instead of showing the Python

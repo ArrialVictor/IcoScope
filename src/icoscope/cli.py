@@ -14,6 +14,7 @@ def _step(msg: str) -> float:
 
 
 def main():
+    """Parse command-line arguments, build (or load) the grid, and launch the viewer."""
     ap = argparse.ArgumentParser(
         prog="icoscope",
         description="Interactive 3D viewer for icosahedral hex/pent grids on a sphere."

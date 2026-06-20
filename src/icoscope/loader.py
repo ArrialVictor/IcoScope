@@ -58,7 +58,8 @@ def load_grid(
     Args:
         path: path to a CF-convention icosahedral NetCDF file.
 
-    Returns:
+    Returns
+    -------
         ``(verts, cells, centers, fields)`` where ``verts`` is ``(V, 3)``
         deduplicated vertex positions on the unit sphere, ``cells`` is a list
         of vertex-index lists (length 5 or 6), ``centers`` is ``(C, 3)`` cell

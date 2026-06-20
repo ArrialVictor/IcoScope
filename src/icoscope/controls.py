@@ -26,6 +26,7 @@ def _expand(w):
 
 class ColorButton(QPushButton):
     """A small square button showing a color swatch; click → QColorDialog."""
+
     color_changed = Signal(str)
 
     def __init__(self, initial="#ffffff", parent=None):
@@ -47,11 +48,14 @@ class ColorButton(QPushButton):
             self.color_changed.emit(c.name())
 
     def set_color(self, hex_str):
+        """Set the current swatch color from a ``#RRGGBB`` string."""
         self._color = QColor(hex_str)
         self._apply()
 
 
 class ControlPanel(QWidget):
+    """Right-side panel: every signal the main app connects to lives here."""
+
     # Coloring
     theme_changed       = Signal(str)
     cmap_changed        = Signal(str)
@@ -282,21 +286,25 @@ class ControlPanel(QWidget):
 
     # convenience setters
     def set_theme(self, name):
+        """Select *name* in the theme combo box (no-op if not listed)."""
         i = self.theme_box.findText(name)
         if i >= 0:
             self.theme_box.setCurrentIndex(i)
 
     def set_cmap(self, name):
+        """Select *name* in the colormap combo box (no-op if not listed)."""
         i = self.cmap_box.findText(name)
         if i >= 0:
             self.cmap_box.setCurrentIndex(i)
 
     def set_color_by(self, name):
+        """Select *name* in the color-by combo box (no-op if not listed)."""
         i = self.color_by_box.findText(name)
         if i >= 0:
             self.color_by_box.setCurrentIndex(i)
 
     def set_color_by_items(self, items):
+        """Repopulate the color-by combo while preserving the current selection."""
         self.color_by_box.blockSignals(True)
         cur = self.color_by_box.currentText()
         self.color_by_box.clear()
@@ -306,15 +314,19 @@ class ControlPanel(QWidget):
         self.color_by_box.blockSignals(False)
 
     def set_edge_color(self, hex_str):
+        """Set the edge-color swatch."""
         self.edge_btn.set_color(hex_str)
 
     def set_coast_color(self, hex_str):
+        """Set the coastline-color swatch."""
         self.coast_btn.set_color(hex_str)
 
     def set_grat_color(self, hex_str):
+        """Set the graticule-color swatch."""
         self.grat_btn.set_color(hex_str)
 
     def disable_n(self, disabled=True):
+        """Lock the grid-frequency controls and flip the file button to 'Unload'."""
         self.n_box.setEnabled(not disabled)
         self.relax_iters_box.setEnabled(not disabled)
         # switch the file button's role
@@ -344,6 +356,7 @@ class ControlPanel(QWidget):
             self.play_btn.setChecked(False)
 
     def set_time_label(self, idx, total):
+        """Update the ``i/N`` label next to the time slider."""
         self.time_label.setText(f"{idx+1}/{total}")
 
     def _on_play_toggled(self, on):
