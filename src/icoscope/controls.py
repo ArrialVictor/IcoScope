@@ -248,24 +248,29 @@ class ControlPanel(QWidget):
         self.file_btn.clicked.connect(self._on_file_btn_clicked)
         v.addWidget(self.file_btn)
 
-        # File summary block (all hidden until a file is loaded).
+        # File summary block — hidden until a file is loaded so the tab
+        # collapses to just the button in the empty state.
         self.file_name_label = QLabel("")
         self.file_name_label.setStyleSheet("font-weight: bold; padding-top: 6px;")
         self.file_name_label.setWordWrap(True)
+        self.file_name_label.setVisible(False)
         v.addWidget(self.file_name_label)
 
         self.file_path_label = QLabel("")
         self.file_path_label.setWordWrap(True)
         self.file_path_label.setStyleSheet("color: #888; font-size: 10px;")
+        self.file_path_label.setVisible(False)
         v.addWidget(self.file_path_label)
 
         self.file_stats_label = QLabel("")
         self.file_stats_label.setStyleSheet("padding-top: 4px;")
+        self.file_stats_label.setVisible(False)
         v.addWidget(self.file_stats_label)
 
         self.file_attrs_label = QLabel("")
         self.file_attrs_label.setStyleSheet("color: #888; font-size: 11px; padding-top: 4px;")
         self.file_attrs_label.setWordWrap(True)
+        self.file_attrs_label.setVisible(False)
         v.addWidget(self.file_attrs_label)
 
         v.addStretch(1)
@@ -490,12 +495,15 @@ class ControlPanel(QWidget):
             for lbl in (self.file_name_label, self.file_path_label,
                         self.file_stats_label, self.file_attrs_label):
                 lbl.setText("")
+                lbl.setVisible(False)
             self.file_path_label.setToolTip("")
             return
 
         self.file_name_label.setText(basename(path))
+        self.file_name_label.setVisible(True)
         self.file_path_label.setText(path)
         self.file_path_label.setToolTip(path)
+        self.file_path_label.setVisible(True)
 
         stats = []
         if n_cells:
@@ -505,6 +513,7 @@ class ControlPanel(QWidget):
         if n_time_steps > 1:
             stats.append(f"{n_time_steps} time steps")
         self.file_stats_label.setText(" · ".join(stats))
+        self.file_stats_label.setVisible(bool(stats))
 
         attr_lines = []
         attrs = attrs or {}
@@ -513,6 +522,7 @@ class ControlPanel(QWidget):
             if val:
                 attr_lines.append(f"{key.capitalize()}: {val}")
         self.file_attrs_label.setText("\n".join(attr_lines))
+        self.file_attrs_label.setVisible(bool(attr_lines))
 
     def disable_n(self, disabled=True):
         """Lock the Ico-tab controls and flip the file button to 'Unload'.
