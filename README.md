@@ -77,6 +77,21 @@ icoscope --file output.nc --describe   # print the file's schema, no GUI
 Once the viewer is open, fields, coastlines, time slider, themes, etc. are all
 controlled from the side panel.
 
+### Synthetic zoom (Schmidt)
+
+The synthetic grid supports DYNAMICO's Schmidt-style conformal zoom — useful
+for previewing how a stretched mesh would look without needing a real file.
+
+```bash
+icoscope --zoom-factor 3 --zoom-lon 2 --zoom-lat 48   # zoom on Paris
+```
+
+`--zoom-factor 1.0` (the default) is the identity. Values above 1 concentrate
+cells at the focal point and coarsen the antipode; values below 1 do the
+opposite. The implementation mirrors DYNAMICO's `schmidt_transform` (Guo &
+Drake, *JCP* 2005, eq. 12). You can also adjust the same parameters live
+from the "Synthetic zoom (Schmidt)" group in the side panel.
+
 > ℹ️ **The very first launch after install can take 10–15 seconds** while
 > Python compiles every dependency's bytecode and the OS loads VTK's large
 > binary libraries from disk for the first time. Subsequent launches reuse

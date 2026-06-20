@@ -173,11 +173,80 @@ def relax_mesh(
     return verts, used
 
 
+def schmidt_stretch(
+    points: np.ndarray,
+    factor: float,
+    lon_deg: float,
+    lat_deg: float,
+) -> np.ndarray:
+    """Apply DYNAMICO's Schmidt conformal stretch to points on the unit sphere.
+
+    Mirrors the implementation in DYNAMICO's ``spherical_geom.f90``
+    (subroutine ``schmidt_transform``), which cites Guo & Drake, *JCP* 2005,
+    eq. (12). The map rotates the focal point ``(lon_deg, lat_deg)`` to the
+    north pole, applies a Möbius stretch in ``sin(lat)``, and rotates back.
+
+    Parameters
+    ----------
+    points : ndarray
+        ``(N, 3)`` array of positions on the unit sphere.
+    factor : float
+        Schmidt stretching factor. ``1.0`` is the identity; ``> 1`` concentrates
+        cells at the focal point and coarsens the antipode; ``< 1`` does the
+        opposite. Linear refinement at the focal point ≈ ``factor``; areal
+        refinement ≈ ``factor ** 2``.
+    lon_deg, lat_deg : float
+        Focal-point coordinates in degrees.
+
+    Returns
+    -------
+    ndarray
+        ``(N, 3)`` stretched positions, re-normalized to the unit sphere.
+    """
+    if abs(factor - 1.0) < 1e-12:
+        return points
+
+    # Rotate the focal point to the north pole. Apply lon by Rz(-lon), then
+    # lat by Ry(lat - π/2). The inverse rotates back.
+    lon = np.radians(lon_deg)
+    lat = np.radians(lat_deg)
+    cz, sz = np.cos(-lon), np.sin(-lon)
+    cy, sy = np.cos(lat - np.pi / 2), np.sin(lat - np.pi / 2)
+    rz = np.array([[cz, -sz, 0.0], [sz, cz, 0.0], [0.0, 0.0, 1.0]])
+    ry = np.array([[cy, 0.0, sy], [0.0, 1.0, 0.0], [-sy, 0.0, cy]])
+    rot = ry @ rz                  # focal → north pole
+    rot_inv = rot.T                # north pole → focal
+
+    p_rot = points @ rot.T
+
+    # Möbius stretch on sin(lat'). cc = factor ** 2 matches DYNAMICO's
+    # `schmidt_factor = schmidt_factor**2` convention internally.
+    cc = factor * factor
+    mu = p_rot[:, 2]                       # sin(lat') because we're on unit sphere
+    mu_p = ((cc - 1.0) + mu * (cc + 1.0)) / ((cc + 1.0) + mu * (cc - 1.0))
+    # Lift back to (x, y, z): preserve azimuth, replace sin(lat) with mu_p.
+    horiz = p_rot[:, :2]
+    horiz_norm = np.linalg.norm(horiz, axis=1, keepdims=True)
+    safe = horiz_norm > 1e-12
+    new_horiz_scale = np.where(safe, np.sqrt(1.0 - mu_p * mu_p)[:, None] / horiz_norm, 0.0)
+    out_rot = np.empty_like(p_rot)
+    out_rot[:, :2] = horiz * new_horiz_scale
+    out_rot[:, 2] = mu_p
+
+    out = out_rot @ rot_inv.T
+    # Defensive re-normalization against floating-point drift.
+    out /= np.linalg.norm(out, axis=1, keepdims=True)
+    return out
+
+
 def goldberg(
     n: int = 4,
     relax: bool = False,
     max_iterations: int = 200,
     tol: float = 1e-4,
+    zoom_factor: float = 1.0,
+    zoom_lon: float = 0.0,
+    zoom_lat: float = 45.0,
 ) -> GoldbergGrid:
     """Build a Goldberg polyhedron of frequency *n*.
 
@@ -185,12 +254,34 @@ def goldberg(
     of the edge-length CV) on the subdivided triangle mesh before taking the
     dual. Yields cells closer to the DYNAMICO-style optimized grid.
 
-    Returns a :class:`GoldbergGrid` named tuple ``(verts, cells, centers, iters)``.
+    With ``zoom_factor != 1.0``, apply DYNAMICO's Schmidt conformal stretch
+    (see :func:`schmidt_stretch`) to the subdivided mesh before taking the
+    dual, concentrating cells near ``(zoom_lon, zoom_lat)``.
+
+    Parameters
+    ----------
+    n : int
+        Subdivision frequency (DYNAMICO ``nbp``). Total cells = ``10·n² + 2``.
+    relax : bool
+        Run spring-relaxation on the triangle mesh before the dual.
+    max_iterations, tol : int, float
+        Relaxation cap and convergence tolerance.
+    zoom_factor : float
+        Schmidt stretching factor; ``1.0`` is the identity (uniform mesh).
+    zoom_lon, zoom_lat : float
+        Schmidt focal point in degrees.
+
+    Returns
+    -------
+    GoldbergGrid
+        Named tuple ``(verts, cells, centers, iters)``.
     """
     iv, ifc = icosahedron()
     sv, sf = subdivide(iv, ifc, n)
     iters = 0
     if relax:
         sv, iters = relax_mesh(sv, sf, max_iterations=max_iterations, tol=tol)
+    if abs(zoom_factor - 1.0) >= 1e-12:
+        sv = schmidt_stretch(sv, zoom_factor, zoom_lon, zoom_lat)
     verts, cells = dual(sv, sf)
     return GoldbergGrid(verts=verts, cells=cells, centers=sv, iters=iters)

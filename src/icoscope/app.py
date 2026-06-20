@@ -37,7 +37,8 @@ SYNTHETIC_COLOR_BY = [
 class MainWindow(QMainWindow):
     """Top-level IcoScope window: 3D sphere view + right-side control panel."""
 
-    def __init__(self, verts, cells, centers, initial_n=8, relax=True):
+    def __init__(self, verts, cells, centers, initial_n=8, relax=True,
+                 zoom_factor=1.0, zoom_lon=0.0, zoom_lat=45.0):
         super().__init__()
         self.setWindowTitle("IcoScope")
         icon_path = os.path.join(os.path.dirname(__file__), "icon.png")
@@ -56,6 +57,9 @@ class MainWindow(QMainWindow):
         self.time_index = 0
         self.n = initial_n
         self.max_relax_iters = 200 if relax else 0
+        self.zoom_factor = float(zoom_factor)
+        self.zoom_lon = float(zoom_lon)
+        self.zoom_lat = float(zoom_lat)
         self.transparent_export = False
 
         self.theme_name = "Dark"
@@ -94,6 +98,7 @@ class MainWindow(QMainWindow):
         self.panel.relax_iters_box.blockSignals(True)
         self.panel.relax_iters_box.setValue(self.max_relax_iters)
         self.panel.relax_iters_box.blockSignals(False)
+        self.panel.set_zoom(self.zoom_factor, self.zoom_lon, self.zoom_lat)
         self.panel.set_theme(self.theme_name)
         self.panel.set_cmap(self.cmap)
         self._sync_color_buttons()
@@ -120,6 +125,7 @@ class MainWindow(QMainWindow):
         self.panel.autorotate_toggled.connect(self._on_spin)
         self.panel.n_changed.connect(self._on_n)
         self.panel.relax_iters_changed.connect(self._on_relax_iters)
+        self.panel.zoom_changed.connect(self._on_zoom)
         self.panel.open_file_clicked.connect(self._on_open_file)
         self.panel.close_file_clicked.connect(self._on_close_file)
         self.panel.time_changed.connect(self._on_time_changed)
@@ -686,7 +692,10 @@ class MainWindow(QMainWindow):
     def _regen_synthetic(self):
         relax = self.max_relax_iters > 0
         v, c, ctr, _ = goldberg(n=self.n, relax=relax,
-                                max_iterations=self.max_relax_iters)
+                                max_iterations=self.max_relax_iters,
+                                zoom_factor=self.zoom_factor,
+                                zoom_lon=self.zoom_lon,
+                                zoom_lat=self.zoom_lat)
         self.verts, self.cells, self.centers = v, c, np.asarray(ctr)
         self._refresh_scalars()
         self._mesh = self._to_polydata()
@@ -705,6 +714,14 @@ class MainWindow(QMainWindow):
         if self.file_path:
             return
         self.max_relax_iters = n
+        self._regen_synthetic()
+
+    def _on_zoom(self, factor, lon, lat):
+        if self.file_path:
+            return
+        self.zoom_factor = float(factor)
+        self.zoom_lon = float(lon)
+        self.zoom_lat = float(lat)
         self._regen_synthetic()
 
     def _on_open_file(self):
@@ -858,7 +875,8 @@ class MainWindow(QMainWindow):
                                  f"{e}\n\nThis needs a VTK build with GL2PS support.")
 
 
-def run(verts, cells, centers, initial_n=8, relax=True, file_path=None):
+def run(verts, cells, centers, initial_n=8, relax=True, file_path=None,
+        zoom_factor=1.0, zoom_lon=0.0, zoom_lat=45.0):
     """Create the QApplication, show the main window, and start the Qt event loop."""
     app = QApplication.instance() or QApplication(sys.argv)
     # Set the icon on the QApplication BEFORE any window appears — that's the
@@ -869,7 +887,8 @@ def run(verts, cells, centers, initial_n=8, relax=True, file_path=None):
         app.setWindowIcon(QIcon(icon_path))
     app.setApplicationName("IcoScope")
     app.setApplicationDisplayName("IcoScope")
-    w = MainWindow(verts, cells, centers, initial_n=initial_n, relax=relax)
+    w = MainWindow(verts, cells, centers, initial_n=initial_n, relax=relax,
+                   zoom_factor=zoom_factor, zoom_lon=zoom_lon, zoom_lat=zoom_lat)
     if file_path:
         # Load the file's fields into the panel as if user had clicked Open.
         from .loader import load_grid

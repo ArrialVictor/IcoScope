@@ -88,6 +88,9 @@ class ControlPanel(QWidget):
     open_file_clicked   = Signal()
     close_file_clicked  = Signal()
 
+    # Synthetic zoom (Schmidt-style, DYNAMICO parameters)
+    zoom_changed        = Signal(float, float, float)   # factor, lon_deg, lat_deg
+
     # Export
     screenshot_clicked     = Signal()
     vector_export_clicked  = Signal()
@@ -124,6 +127,43 @@ class ControlPanel(QWidget):
         gl.addRow(self.file_btn)
 
         outer.addWidget(gs)
+
+        # ── Synthetic zoom (Schmidt) ────────────────
+        zg = QGroupBox("Synthetic zoom (Schmidt)")
+        zl = QFormLayout(zg)
+        zl.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+
+        self.zoom_factor_box = QDoubleSpinBox()
+        self.zoom_factor_box.setRange(0.1, 10.0)
+        self.zoom_factor_box.setSingleStep(0.1)
+        self.zoom_factor_box.setDecimals(2)
+        self.zoom_factor_box.setValue(1.0)
+        self.zoom_factor_box.setKeyboardTracking(False)
+        zl.addRow("Factor", self.zoom_factor_box)
+
+        self.zoom_lon_box = QDoubleSpinBox()
+        self.zoom_lon_box.setRange(-180.0, 180.0)
+        self.zoom_lon_box.setSingleStep(5.0)
+        self.zoom_lon_box.setDecimals(2)
+        self.zoom_lon_box.setValue(0.0)
+        self.zoom_lon_box.setKeyboardTracking(False)
+        zl.addRow("Center lon (°)", self.zoom_lon_box)
+
+        self.zoom_lat_box = QDoubleSpinBox()
+        self.zoom_lat_box.setRange(-90.0, 90.0)
+        self.zoom_lat_box.setSingleStep(5.0)
+        self.zoom_lat_box.setDecimals(2)
+        self.zoom_lat_box.setValue(45.0)
+        self.zoom_lat_box.setKeyboardTracking(False)
+        zl.addRow("Center lat (°)", self.zoom_lat_box)
+
+        # Single Apply button so the three params are picked up together
+        # (avoids three successive mesh rebuilds while the user is editing).
+        self.zoom_apply_btn = QPushButton("Apply zoom")
+        self.zoom_apply_btn.clicked.connect(self._emit_zoom)
+        zl.addRow(self.zoom_apply_btn)
+
+        outer.addWidget(zg)
 
         # ── Coloring ────────────────────────────────
         col = QGroupBox("Coloring")
@@ -326,12 +366,37 @@ class ControlPanel(QWidget):
         self.grat_btn.set_color(hex_str)
 
     def disable_n(self, disabled=True):
-        """Lock the grid-frequency controls and flip the file button to 'Unload'."""
+        """Lock the grid-frequency controls and flip the file button to 'Unload'.
+
+        Also locks the synthetic-zoom controls, which only apply to the
+        Goldberg generator (loaded NetCDF files use their own geometry).
+        """
         self.n_box.setEnabled(not disabled)
         self.relax_iters_box.setEnabled(not disabled)
+        self.zoom_factor_box.setEnabled(not disabled)
+        self.zoom_lon_box.setEnabled(not disabled)
+        self.zoom_lat_box.setEnabled(not disabled)
+        self.zoom_apply_btn.setEnabled(not disabled)
         # switch the file button's role
         self._file_btn_mode = "close" if disabled else "open"
         self.file_btn.setText("Unload NetCDF" if disabled else "Open NetCDF…")
+
+    def _emit_zoom(self):
+        """Emit ``zoom_changed`` with the current factor / lon / lat values."""
+        self.zoom_changed.emit(
+            self.zoom_factor_box.value(),
+            self.zoom_lon_box.value(),
+            self.zoom_lat_box.value(),
+        )
+
+    def set_zoom(self, factor, lon, lat):
+        """Sync the zoom spinboxes to the given values without emitting."""
+        for box, val in ((self.zoom_factor_box, factor),
+                         (self.zoom_lon_box, lon),
+                         (self.zoom_lat_box, lat)):
+            box.blockSignals(True)
+            box.setValue(float(val))
+            box.blockSignals(False)
 
     def _on_file_btn_clicked(self):
         if self._file_btn_mode == "open":

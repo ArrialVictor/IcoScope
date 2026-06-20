@@ -27,6 +27,13 @@ def main():
                      help="load grid from NetCDF file")
     ap.add_argument("--no-relax", action="store_true",
                     help="don't run spring-relaxation on the synthetic grid")
+    ap.add_argument("--zoom-factor", type=float, default=1.0, metavar="F",
+                    help="Schmidt stretching factor for the synthetic grid "
+                         "(default 1.0 = uniform; >1 concentrates cells at the focal point)")
+    ap.add_argument("--zoom-lon", type=float, default=0.0, metavar="DEG",
+                    help="Schmidt focal-point longitude in degrees (default 0.0)")
+    ap.add_argument("--zoom-lat", type=float, default=45.0, metavar="DEG",
+                    help="Schmidt focal-point latitude in degrees (default 45.0)")
     ap.add_argument("--describe", action="store_true",
                     help="(with --file) print variables and exit")
     ap.add_argument("--quiet", "-q", action="store_true",
@@ -51,10 +58,19 @@ def main():
                 f"({time.time()-t0:.1f}s)\n"
             )
     else:
+        zoom_note = (f", Schmidt zoom factor={args.zoom_factor} "
+                     f"at ({args.zoom_lon}, {args.zoom_lat})"
+                     if abs(args.zoom_factor - 1.0) >= 1e-12 else "")
         t1 = log(f"building synthetic grid n={args.generate}"
-                 f"{' (with relaxation)' if not args.no_relax else ''}")
-        verts, cells, centers, _iters = goldberg(n=args.generate,
-                                                 relax=not args.no_relax)
+                 f"{' (with relaxation)' if not args.no_relax else ''}"
+                 f"{zoom_note}")
+        verts, cells, centers, _iters = goldberg(
+            n=args.generate,
+            relax=not args.no_relax,
+            zoom_factor=args.zoom_factor,
+            zoom_lon=args.zoom_lon,
+            zoom_lat=args.zoom_lat,
+        )
         if not args.quiet:
             sys.stderr.write(
                 f"  {len(cells)} cells "
@@ -67,7 +83,8 @@ def main():
     from .app import run
     log("opening window")
     run(verts, cells, centers, initial_n=args.generate, relax=not args.no_relax,
-        file_path=args.file)
+        file_path=args.file,
+        zoom_factor=args.zoom_factor, zoom_lon=args.zoom_lon, zoom_lat=args.zoom_lat)
 
 
 if __name__ == "__main__":
