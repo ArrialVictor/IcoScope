@@ -161,6 +161,7 @@ class ControlPanel(QWidget):
 
     def _build_ico_tab(self) -> QWidget:
         tab = QWidget()
+        tab.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
         v = QVBoxLayout(tab)
         v.setContentsMargins(6, 6, 6, 6)
 
@@ -222,22 +223,22 @@ class ControlPanel(QWidget):
         zl.addRow(self.zoom_apply_btn)
 
         v.addWidget(zg)
-        v.addStretch(1)
         return tab
 
     def _build_lonlat_tab(self) -> QWidget:
         tab = QWidget()
+        tab.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
         v = QVBoxLayout(tab)
         v.setContentsMargins(6, 6, 6, 6)
         placeholder = QLabel("LonLat mesh (coming soon)")
         placeholder.setAlignment(Qt.AlignCenter)
         placeholder.setStyleSheet("color: #888; font-style: italic; padding: 24px;")
         v.addWidget(placeholder)
-        v.addStretch(1)
         return tab
 
     def _build_file_tab(self) -> QWidget:
         tab = QWidget()
+        tab.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
         v = QVBoxLayout(tab)
         v.setContentsMargins(6, 6, 6, 6)
         v.setSpacing(4)
@@ -273,7 +274,6 @@ class ControlPanel(QWidget):
         self.file_attrs_label.setVisible(False)
         v.addWidget(self.file_attrs_label)
 
-        v.addStretch(1)
         return tab
 
     # ── Shared-section builders ───────────────────────────────────────────
