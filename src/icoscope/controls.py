@@ -14,6 +14,7 @@ from qtpy.QtWidgets import (
     QSizePolicy,
     QSlider,
     QSpinBox,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -54,7 +55,13 @@ class ColorButton(QPushButton):
 
 
 class ControlPanel(QWidget):
-    """Right-side panel: every signal the main app connects to lives here."""
+    """Right-side panel: every signal the main app connects to lives here.
+
+    Top half is a tab strip — `Ico`, `LonLat`, `File` — that picks the mesh
+    source and shows its source-specific parameters. Bottom half is shared
+    display controls (Coloring, Overlays, Animation, Export) that apply to
+    whatever is currently rendered.
+    """
 
     # Coloring
     theme_changed       = Signal(str)
@@ -82,13 +89,15 @@ class ControlPanel(QWidget):
     play_toggled        = Signal(bool)
     play_speed_changed  = Signal(int)   # ms per step
 
-    # Grid
+    # Grid (Ico tab)
     n_changed           = Signal(int)
     relax_iters_changed = Signal(int)
+
+    # File (File tab)
     open_file_clicked   = Signal()
     close_file_clicked  = Signal()
 
-    # Synthetic zoom (Schmidt-style, DYNAMICO parameters)
+    # Synthetic zoom (Schmidt-style, DYNAMICO parameters; Ico tab)
     zoom_changed        = Signal(float, float, float)   # factor, lon_deg, lat_deg
 
     # Export
@@ -97,10 +106,32 @@ class ControlPanel(QWidget):
 
     def __init__(self, themes, cmaps, parent=None):
         super().__init__(parent)
-        self.setFixedWidth(300)
+        self.setFixedWidth(320)
         outer = QVBoxLayout(self)
 
-        # ── Grid ───────────────────────────────────
+        # ── Tab strip: mesh source ─────────────────
+        self.tabs = QTabWidget()
+        self.tabs.addTab(self._build_ico_tab(), "Ico")
+        self.tabs.addTab(self._build_lonlat_tab(), "LonLat")
+        self.tabs.addTab(self._build_file_tab(), "File")
+        outer.addWidget(self.tabs)
+
+        # ── Shared display section ─────────────────
+        outer.addWidget(self._build_coloring_group(themes, cmaps))
+        outer.addWidget(self._build_overlays_group())
+        outer.addWidget(self._build_animation_group())
+        outer.addWidget(self._build_export_group())
+
+        outer.addStretch(1)
+
+    # ── Tab builders ──────────────────────────────────────────────────────
+
+    def _build_ico_tab(self) -> QWidget:
+        tab = QWidget()
+        v = QVBoxLayout(tab)
+        v.setContentsMargins(6, 6, 6, 6)
+
+        # Grid params
         gs = QGroupBox("Grid")
         gl = QFormLayout(gs)
         gl.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
@@ -120,15 +151,9 @@ class ControlPanel(QWidget):
         self.relax_iters_box.valueChanged.connect(self.relax_iters_changed)
         gl.addRow("Max relax iter", self.relax_iters_box)
 
-        # Open ↔ Unload toggle: same button, label/behavior switches with state.
-        self.file_btn = QPushButton("Open NetCDF…")
-        self._file_btn_mode = "open"
-        self.file_btn.clicked.connect(self._on_file_btn_clicked)
-        gl.addRow(self.file_btn)
+        v.addWidget(gs)
 
-        outer.addWidget(gs)
-
-        # ── Synthetic zoom (Schmidt) ────────────────
+        # Synthetic zoom (Schmidt)
         zg = QGroupBox("Synthetic zoom (Schmidt)")
         zl = QFormLayout(zg)
         zl.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
@@ -163,9 +188,43 @@ class ControlPanel(QWidget):
         self.zoom_apply_btn.clicked.connect(self._emit_zoom)
         zl.addRow(self.zoom_apply_btn)
 
-        outer.addWidget(zg)
+        v.addWidget(zg)
+        v.addStretch(1)
+        return tab
 
-        # ── Coloring ────────────────────────────────
+    def _build_lonlat_tab(self) -> QWidget:
+        tab = QWidget()
+        v = QVBoxLayout(tab)
+        v.setContentsMargins(6, 6, 6, 6)
+        placeholder = QLabel("LonLat mesh (coming soon)")
+        placeholder.setAlignment(Qt.AlignCenter)
+        placeholder.setStyleSheet("color: #888; font-style: italic; padding: 24px;")
+        v.addWidget(placeholder)
+        v.addStretch(1)
+        return tab
+
+    def _build_file_tab(self) -> QWidget:
+        tab = QWidget()
+        v = QVBoxLayout(tab)
+        v.setContentsMargins(6, 6, 6, 6)
+
+        # Open ↔ Unload toggle: same button, label/behavior switches with state.
+        self.file_btn = QPushButton("Open NetCDF…")
+        self._file_btn_mode = "open"
+        self.file_btn.clicked.connect(self._on_file_btn_clicked)
+        v.addWidget(self.file_btn)
+
+        self.file_path_label = QLabel("")
+        self.file_path_label.setWordWrap(True)
+        self.file_path_label.setStyleSheet("color: #888; font-size: 10px; padding-top: 4px;")
+        v.addWidget(self.file_path_label)
+
+        v.addStretch(1)
+        return tab
+
+    # ── Shared-section builders ───────────────────────────────────────────
+
+    def _build_coloring_group(self, themes, cmaps) -> QGroupBox:
         col = QGroupBox("Coloring")
         cf = QFormLayout(col)
         cf.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
@@ -203,9 +262,9 @@ class ControlPanel(QWidget):
         self.bar_cb.toggled.connect(self.colorbar_toggled)
         cf.addRow(self.bar_cb)
 
-        outer.addWidget(col)
+        return col
 
-        # ── Overlays ───────────────────────────────
+    def _build_overlays_group(self) -> QGroupBox:
         ov = QGroupBox("Overlays")
         ol = QVBoxLayout(ov)
         ol.setSpacing(2)
@@ -247,9 +306,9 @@ class ControlPanel(QWidget):
             "Cell edges", self.edges_toggled, self.edge_color_changed,
             self.edge_width_changed, default_width=0.6, checked=True)
 
-        outer.addWidget(ov)
+        return ov
 
-        # ── Animation ──────────────────────────────
+    def _build_animation_group(self) -> QGroupBox:
         anim = QGroupBox("Animation")
         al = QVBoxLayout(anim)
         self.spin_cb = QCheckBox("Auto-rotate")
@@ -308,9 +367,9 @@ class ControlPanel(QWidget):
         al.addWidget(self.speed_row)
         self.speed_row.setVisible(False)
 
-        outer.addWidget(anim)
+        return anim
 
-        # ── Export ─────────────────────────────────
+    def _build_export_group(self) -> QGroupBox:
         exp = QGroupBox("Export")
         elay = QHBoxLayout(exp)
         self.shot_btn = QPushButton("Save as PNG…")
@@ -319,12 +378,10 @@ class ControlPanel(QWidget):
         self.vec_btn = QPushButton("Save as SVG…")
         self.vec_btn.clicked.connect(self.vector_export_clicked)
         elay.addWidget(self.vec_btn)
+        return exp
 
-        outer.addWidget(exp)
+    # ── Public setters (called by app.py) ────────────────────────────────
 
-        outer.addStretch(1)
-
-    # convenience setters
     def set_theme(self, name):
         """Select *name* in the theme combo box (no-op if not listed)."""
         i = self.theme_box.findText(name)
@@ -365,8 +422,12 @@ class ControlPanel(QWidget):
         """Set the graticule-color swatch."""
         self.grat_btn.set_color(hex_str)
 
+    def set_file_path(self, path: str):
+        """Show the loaded NetCDF path in the File tab (empty string clears it)."""
+        self.file_path_label.setText(path or "")
+
     def disable_n(self, disabled=True):
-        """Lock the grid-frequency controls and flip the file button to 'Unload'.
+        """Lock the Ico-tab controls and flip the file button to 'Unload'.
 
         Also locks the synthetic-zoom controls, which only apply to the
         Goldberg generator (loaded NetCDF files use their own geometry).

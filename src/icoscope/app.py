@@ -753,6 +753,7 @@ class MainWindow(QMainWindow):
         self._cell_locator = None
         self._clear_highlight()
         self.panel.disable_n(True)
+        self.panel.set_file_path(path)
         self._build_scene()
         self._update_status()
 
@@ -766,6 +767,7 @@ class MainWindow(QMainWindow):
         self.color_by = "None"
         self.panel.set_time_steps(0)
         self.panel.disable_n(False)
+        self.panel.set_file_path("")
         self._regen_synthetic()
 
     def _on_time_changed(self, idx):
@@ -904,6 +906,7 @@ def run(verts, cells, centers, initial_n=8, relax=True, file_path=None,
         w._refresh_scalars()
         w._mesh = w._to_polydata()
         w.panel.disable_n(True)
+        w.panel.set_file_path(file_path)
         w._build_scene()
         w._update_status()
     w.show()
