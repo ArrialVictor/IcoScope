@@ -25,6 +25,36 @@ def _expand(w):
     return w
 
 
+class _AdaptiveTabWidget(QTabWidget):
+    """QTabWidget whose vertical size hint follows only the active tab's content.
+
+    The stock QTabWidget reserves vertical space for the tallest tab, so on
+    short tabs the area below stays artificially low. Overriding sizeHint /
+    minimumSizeHint lets the shared display section slide up when the user
+    is on a small tab.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.currentChanged.connect(lambda _i: self.updateGeometry())
+
+    def sizeHint(self):
+        return self._hint_for_current(use_min=False)
+
+    def minimumSizeHint(self):
+        return self._hint_for_current(use_min=True)
+
+    def _hint_for_current(self, use_min: bool):
+        page = self.currentWidget()
+        base = super().minimumSizeHint() if use_min else super().sizeHint()
+        if page is None:
+            return base
+        page_hint = page.minimumSizeHint() if use_min else page.sizeHint()
+        bar_h = self.tabBar().sizeHint().height()
+        base.setHeight(page_hint.height() + bar_h + 8)   # 8px frame padding
+        return base
+
+
 class ColorButton(QPushButton):
     """A small square button showing a color swatch; click → QColorDialog."""
 
@@ -110,7 +140,10 @@ class ControlPanel(QWidget):
         outer = QVBoxLayout(self)
 
         # ── Tab strip: mesh source ─────────────────
-        self.tabs = QTabWidget()
+        # Adaptive: the tab area shrinks to the active tab's content (see
+        # _AdaptiveTabWidget) so the shared display section below slides up
+        # when the user is on a short tab.
+        self.tabs = _AdaptiveTabWidget()
         self.tabs.addTab(self._build_ico_tab(), "Ico")
         self.tabs.addTab(self._build_lonlat_tab(), "LonLat")
         self.tabs.addTab(self._build_file_tab(), "File")
@@ -207,6 +240,7 @@ class ControlPanel(QWidget):
         tab = QWidget()
         v = QVBoxLayout(tab)
         v.setContentsMargins(6, 6, 6, 6)
+        v.setSpacing(4)
 
         # Open ↔ Unload toggle: same button, label/behavior switches with state.
         self.file_btn = QPushButton("Open NetCDF…")
@@ -214,10 +248,25 @@ class ControlPanel(QWidget):
         self.file_btn.clicked.connect(self._on_file_btn_clicked)
         v.addWidget(self.file_btn)
 
+        # File summary block (all hidden until a file is loaded).
+        self.file_name_label = QLabel("")
+        self.file_name_label.setStyleSheet("font-weight: bold; padding-top: 6px;")
+        self.file_name_label.setWordWrap(True)
+        v.addWidget(self.file_name_label)
+
         self.file_path_label = QLabel("")
         self.file_path_label.setWordWrap(True)
-        self.file_path_label.setStyleSheet("color: #888; font-size: 10px; padding-top: 4px;")
+        self.file_path_label.setStyleSheet("color: #888; font-size: 10px;")
         v.addWidget(self.file_path_label)
+
+        self.file_stats_label = QLabel("")
+        self.file_stats_label.setStyleSheet("padding-top: 4px;")
+        v.addWidget(self.file_stats_label)
+
+        self.file_attrs_label = QLabel("")
+        self.file_attrs_label.setStyleSheet("color: #888; font-size: 11px; padding-top: 4px;")
+        self.file_attrs_label.setWordWrap(True)
+        v.addWidget(self.file_attrs_label)
 
         v.addStretch(1)
         return tab
@@ -422,9 +471,48 @@ class ControlPanel(QWidget):
         """Set the graticule-color swatch."""
         self.grat_btn.set_color(hex_str)
 
-    def set_file_path(self, path: str):
-        """Show the loaded NetCDF path in the File tab (empty string clears it)."""
-        self.file_path_label.setText(path or "")
+    def set_file_info(
+        self,
+        path: str = "",
+        n_cells: int = 0,
+        n_fields: int = 0,
+        n_time_steps: int = 0,
+        attrs: dict | None = None,
+    ):
+        """Populate the File tab's summary block.
+
+        Pass empty path (or call with no args) to clear everything back to the
+        unloaded state. ``attrs`` is the NetCDF global-attributes dict; only
+        ``title`` and ``source`` are surfaced if present.
+        """
+        from os.path import basename
+        if not path:
+            for lbl in (self.file_name_label, self.file_path_label,
+                        self.file_stats_label, self.file_attrs_label):
+                lbl.setText("")
+            self.file_path_label.setToolTip("")
+            return
+
+        self.file_name_label.setText(basename(path))
+        self.file_path_label.setText(path)
+        self.file_path_label.setToolTip(path)
+
+        stats = []
+        if n_cells:
+            stats.append(f"{n_cells:,} cells")
+        if n_fields:
+            stats.append(f"{n_fields} field{'s' if n_fields != 1 else ''}")
+        if n_time_steps > 1:
+            stats.append(f"{n_time_steps} time steps")
+        self.file_stats_label.setText(" · ".join(stats))
+
+        attr_lines = []
+        attrs = attrs or {}
+        for key in ("title", "source"):
+            val = attrs.get(key) or attrs.get(key.capitalize())
+            if val:
+                attr_lines.append(f"{key.capitalize()}: {val}")
+        self.file_attrs_label.setText("\n".join(attr_lines))
 
     def disable_n(self, disabled=True):
         """Lock the Ico-tab controls and flip the file button to 'Unload'.
