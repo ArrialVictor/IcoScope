@@ -223,6 +223,7 @@ class ControlPanel(QWidget):
         zl.addRow(self.zoom_apply_btn)
 
         v.addWidget(zg)
+        v.addStretch(1)
         return tab
 
     def _build_lonlat_tab(self) -> QWidget:
@@ -234,6 +235,7 @@ class ControlPanel(QWidget):
         placeholder.setAlignment(Qt.AlignCenter)
         placeholder.setStyleSheet("color: #888; font-style: italic; padding: 24px;")
         v.addWidget(placeholder)
+        v.addStretch(1)
         return tab
 
     def _build_file_tab(self) -> QWidget:
@@ -274,6 +276,7 @@ class ControlPanel(QWidget):
         self.file_attrs_label.setVisible(False)
         v.addWidget(self.file_attrs_label)
 
+        v.addStretch(1)
         return tab
 
     # ── Shared-section builders ───────────────────────────────────────────
