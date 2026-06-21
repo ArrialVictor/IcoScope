@@ -928,6 +928,12 @@ class MainWindow(QMainWindow):
             self._regen_lonlat()
 
     def _on_lmdz_zoom(self, clon, clat, gx, gy, dx, dy, tx, ty):
+        # Snapshot the last known good params so we can roll back if the new
+        # ones fail the 2·β - G > 0 validity check inside latlon_mesh.
+        snapshot = (self.lmdz_clon, self.lmdz_clat,
+                    self.lmdz_grossismx, self.lmdz_grossismy,
+                    self.lmdz_dzoomx, self.lmdz_dzoomy,
+                    self.lmdz_taux, self.lmdz_tauy)
         self.lmdz_clon = float(clon)
         self.lmdz_clat = float(clat)
         self.lmdz_grossismx = float(gx)
@@ -936,8 +942,19 @@ class MainWindow(QMainWindow):
         self.lmdz_dzoomy = float(dy)
         self.lmdz_taux = float(tx)
         self.lmdz_tauy = float(ty)
-        if self._on_lonlat_tab():
+        if not self._on_lonlat_tab():
+            return
+        try:
             self._regen_lonlat()
+        except ValueError as e:
+            # Bad combination — restore state and the spinboxes, flash the
+            # LMDZ error in the status bar.
+            (self.lmdz_clon, self.lmdz_clat,
+             self.lmdz_grossismx, self.lmdz_grossismy,
+             self.lmdz_dzoomx, self.lmdz_dzoomy,
+             self.lmdz_taux, self.lmdz_tauy) = snapshot
+            self.panel.lonlat_tab.set_lmdz_zoom(*snapshot)
+            self.statusBar().showMessage(str(e), 5000)
 
     def _on_open_file(self):
         path, _ = QFileDialog.getOpenFileName(
