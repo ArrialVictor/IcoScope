@@ -385,6 +385,10 @@ class MainWindow(QMainWindow):
             return self._cell_locator
 
         def on_pick(point, *args, **kwargs):
+            # Empty-sphere state — no cells to pick, and SetDataSet(None) on
+            # the locator triggers a "No cells to subdivide" VTK error.
+            if self._mesh is None:
+                return
             x, y = iren.GetEventPosition()
             ren = self.plotter.renderer
             cam = ren.GetActiveCamera()
