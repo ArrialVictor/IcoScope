@@ -948,13 +948,21 @@ class MainWindow(QMainWindow):
             self._regen_lonlat()
         except ValueError as e:
             # Bad combination — restore state and the spinboxes, flash the
-            # LMDZ error in the status bar.
+            # LMDZ error text in red in the status bar.
             (self.lmdz_clon, self.lmdz_clat,
              self.lmdz_grossismx, self.lmdz_grossismy,
              self.lmdz_dzoomx, self.lmdz_dzoomy,
              self.lmdz_taux, self.lmdz_tauy) = snapshot
             self.panel.lonlat_tab.set_lmdz_zoom(*snapshot)
-            self.statusBar().showMessage(str(e), 5000)
+            self._flash_error(str(e))
+
+    def _flash_error(self, msg: str, duration_ms: int = 5000):
+        """Show ``msg`` in red in the status bar for ``duration_ms`` ms."""
+        sb = self.statusBar()
+        old_style = sb.styleSheet()
+        sb.setStyleSheet("QStatusBar { color: #d33; font-weight: bold; }")
+        sb.showMessage(msg, duration_ms)
+        QTimer.singleShot(duration_ms, lambda: sb.setStyleSheet(old_style))
 
     def _on_open_file(self):
         path, _ = QFileDialog.getOpenFileName(

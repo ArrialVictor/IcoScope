@@ -647,6 +647,14 @@ class LonLatTab(QWidget):
     def set_lmdz_zoom(self, clon, clat, grossismx, grossismy,
                       dzoomx, dzoomy, taux, tauy):
         """Sync the LMDZ-zoom spinboxes and toggle state to the given values."""
+        # Drop focus before the revert: the line-editor's uncommitted text
+        # would otherwise paint over the value we set until focus leaves.
+        for b in (self.lmdz_clon_box, self.lmdz_clat_box,
+                  self.lmdz_grossismx_box, self.lmdz_grossismy_box,
+                  self.lmdz_dzoomx_box, self.lmdz_dzoomy_box,
+                  self.lmdz_taux_box, self.lmdz_tauy_box):
+            if b.hasFocus():
+                b.clearFocus()
         for box, val in (
             (self.lmdz_clon_box, clon),
             (self.lmdz_clat_box, clat),
