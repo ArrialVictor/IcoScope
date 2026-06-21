@@ -624,7 +624,7 @@ class LonLatTab(QWidget):
             self.lmdz_tauy_box.value(),
         )
 
-    def _toggle_lmdz_zoom(self):
+    def _toggle_lmdz_zoom(self, *_args):
         """Activate or deactivate the LMDZ tanh zoom (button-as-toggle)."""
         if self._lmdz_zoom_active:
             self._lmdz_zoom_active = False
@@ -643,6 +643,14 @@ class LonLatTab(QWidget):
     def lmdz_zoom_active(self) -> bool:
         """Whether the LMDZ-zoom toggle is currently on."""
         return self._lmdz_zoom_active
+
+    def set_lmdz_zoom_toggle_enabled(self, enabled: bool):
+        """Enable or disable the Activate/Deactivate zoom button.
+
+        Used by the main window to block activation when the current
+        spinbox combination would fail LMDZ's 2β-G>0 validity check.
+        """
+        self.lmdz_zoom_toggle_btn.setEnabled(enabled)
 
     def _on_lmdz_spinbox_changed(self, _value):
         """Re-emit on any LMDZ-zoom spinbox edit, regardless of toggle state.

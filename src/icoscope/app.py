@@ -891,18 +891,17 @@ class MainWindow(QMainWindow):
             self.cells = cached["cells"]
             self.centers = cached["centers"]
         else:
-            try:
-                v, c, ctr = latlon_mesh(
-                    iim=self.iim, jjm=self.jjm,
-                    clon=self.lmdz_clon, clat=self.lmdz_clat,
-                    grossismx=self.lmdz_grossismx,
-                    grossismy=self.lmdz_grossismy,
-                    dzoomx=self.lmdz_dzoomx, dzoomy=self.lmdz_dzoomy,
-                    taux=self.lmdz_taux, tauy=self.lmdz_tauy,
-                )
-            except ValueError as e:
-                self.statusBar().showMessage(f"LMDZ zoom rejected: {e}", 5000)
-                return
+            # latlon_mesh raises ValueError for invalid LMDZ-zoom combinations
+            # (the 2β-G>0 check). Let it propagate — _on_lmdz_zoom catches it
+            # and triggers the snap-back + red error message.
+            v, c, ctr = latlon_mesh(
+                iim=self.iim, jjm=self.jjm,
+                clon=self.lmdz_clon, clat=self.lmdz_clat,
+                grossismx=self.lmdz_grossismx,
+                grossismy=self.lmdz_grossismy,
+                dzoomx=self.lmdz_dzoomx, dzoomy=self.lmdz_dzoomy,
+                taux=self.lmdz_taux, tauy=self.lmdz_tauy,
+            )
             self.verts, self.cells, self.centers = v, c, np.asarray(ctr)
             self._lonlat_cache = {
                 "params": key,
@@ -943,9 +942,13 @@ class MainWindow(QMainWindow):
         self.lmdz_taux = float(tx)
         self.lmdz_tauy = float(ty)
 
+        # Default: a valid combination keeps the toggle enabled. Either
+        # branch below may disable it.
+        self.panel.lonlat_tab.set_lmdz_zoom_toggle_enabled(True)
         active = self.panel.lonlat_tab.lmdz_zoom_active
         if active and self._on_lonlat_tab():
-            # Full regen with revert-on-error.
+            # Full regen with revert-on-error. Revert restores a known-good
+            # combination, so the toggle stays enabled either way.
             try:
                 self._regen_lonlat()
             except ValueError as e:
@@ -954,9 +957,10 @@ class MainWindow(QMainWindow):
                 # so setValue actually repaints the line editor on macOS.
                 QTimer.singleShot(0, lambda: self._revert_lmdz_zoom(snap, err))
         else:
-            # Zoom off (or not on the LonLat tab) — still validate so the
-            # user knows their combination is bad, but don't revert; they're
-            # editing settings, not driving live geometry.
+            # Zoom off — still validate so the user knows the combination is
+            # bad. We don't snap-back (lets them keep editing settings) but
+            # we grey out the Activate toggle until the combination becomes
+            # valid again, so they can't activate a broken zoom.
             try:
                 from .lonlat import latlon_mesh
                 latlon_mesh(
@@ -968,6 +972,7 @@ class MainWindow(QMainWindow):
                     taux=self.lmdz_taux, tauy=self.lmdz_tauy,
                 )
             except ValueError as e:
+                self.panel.lonlat_tab.set_lmdz_zoom_toggle_enabled(False)
                 err = str(e)
                 QTimer.singleShot(0, lambda: self._flash_error(err))
 
@@ -990,7 +995,9 @@ class MainWindow(QMainWindow):
         if not hasattr(self, "_error_label"):
             self._error_label = QLabel("")
             self._error_label.setTextFormat(Qt.RichText)
-            self.statusBar().addPermanentWidget(self._error_label)
+            # addWidget anchors to the left (where status messages normally sit);
+            # addPermanentWidget would put it on the right.
+            self.statusBar().addWidget(self._error_label, 1)
         self._error_label.setText(
             f'<span style="color:#d33; font-weight:bold;">{msg}</span>'
         )
