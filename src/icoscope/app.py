@@ -937,7 +937,7 @@ class MainWindow(QMainWindow):
         )
 
     def _on_close_file(self):
-        """Drop the loaded file and return to the synthetic grid."""
+        """Drop the loaded file. Stays on the File tab — shows the empty sphere."""
         if not self.file_path:
             return
         self.file_path = None
@@ -949,8 +949,9 @@ class MainWindow(QMainWindow):
         self.panel.file_tab.set_time_steps(0)
         self.panel.file_tab.set_file_loaded(False)
         self.panel.file_tab.set_file_info()
-        # Switching to the Ico tab triggers _on_tab_changed → _regen_synthetic.
-        self.panel.tabs.setCurrentIndex(0)
+        # File tab stays active; render the empty sphere. The spin timer
+        # is unaffected — _spin_tick rotates the camera, not the mesh.
+        self._render_empty_sphere()
 
     def _activate_file_view(self):
         """Render the cached file mesh (must be called only when _file_cache is set)."""
