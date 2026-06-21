@@ -101,6 +101,30 @@ def test_minimum_sizes_do_not_crash():
     assert len(cells) == 4
 
 
+def test_polar_triangle_winding_is_ccw_from_outside():
+    """Polar triangles must wind CCW viewed from outside the sphere.
+
+    Computed via the right-hand rule: ``cross(b-a, c-a)`` should have a
+    positive component in the outward-radial direction at the cell center.
+    """
+    iim, jjm = 8, 5
+    verts, cells, centers = latlon_mesh(iim=iim, jjm=jjm)
+
+    def outward_dot(cell: list[int]) -> float:
+        a, b, c = verts[cell[0]], verts[cell[1]], verts[cell[2]]
+        normal = np.cross(b - a, c - a)
+        # Outward = direction of the cell's geometric average (away from origin).
+        outward = a + b + c
+        return float(np.dot(normal, outward))
+
+    # All north polar triangles
+    for k in range(iim):
+        assert outward_dot(cells[k]) > 0, f"north triangle {k} winds inward"
+    # All south polar triangles
+    for k in range(len(cells) - iim, len(cells)):
+        assert outward_dot(cells[k]) > 0, f"south triangle {k} winds inward"
+
+
 def test_tanh_coord_arrays_are_monotonic():
     """The tanh-zoom coord generator must produce strictly increasing edges
     and centers — non-monotone output would break the cell-corner ordering
