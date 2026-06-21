@@ -814,7 +814,12 @@ class MainWindow(QMainWindow):
         """Tab is the active mesh source — swap the rendered scene accordingly."""
         if idx == 0:           # Ico
             # Ico view always reflects current synthetic params; cheap to rebuild.
+            # Reset color_by to a synthetic option BEFORE rebuilding the mesh,
+            # otherwise stale file-field selections produce a scalar array sized
+            # for the file and crash when applied to the Ico mesh.
             self.panel.set_color_by_items(SYNTHETIC_COLOR_BY)
+            self.color_by = "None"
+            self.panel.set_color_by("None")
             self._regen_synthetic()
         elif idx == 2:         # File
             if self._file_cache is not None:
