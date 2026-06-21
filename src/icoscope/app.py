@@ -957,12 +957,18 @@ class MainWindow(QMainWindow):
             self._flash_error(str(e))
 
     def _flash_error(self, msg: str, duration_ms: int = 5000):
-        """Show ``msg`` in red in the status bar for ``duration_ms`` ms."""
-        sb = self.statusBar()
-        old_style = sb.styleSheet()
-        sb.setStyleSheet("QStatusBar { color: #d33; font-weight: bold; }")
-        sb.showMessage(msg, duration_ms)
-        QTimer.singleShot(duration_ms, lambda: sb.setStyleSheet(old_style))
+        """Show ``msg`` in red in the status bar for ``duration_ms`` ms.
+
+        Uses a dedicated permanent QLabel widget rather than the status bar's
+        built-in showMessage — QStatusBar's internal message label often
+        ignores stylesheet color overrides on macOS.
+        """
+        if not hasattr(self, "_error_label"):
+            self._error_label = QLabel("")
+            self._error_label.setStyleSheet("color: #d33; font-weight: bold;")
+            self.statusBar().addPermanentWidget(self._error_label)
+        self._error_label.setText(msg)
+        QTimer.singleShot(duration_ms, lambda: self._error_label.setText(""))
 
     def _on_open_file(self):
         path, _ = QFileDialog.getOpenFileName(
