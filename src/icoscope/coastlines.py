@@ -6,6 +6,7 @@ projects it onto the unit sphere as 3D polylines for PyVista.
 import json
 import os
 import urllib.request
+from typing import Any
 
 import numpy as np
 
@@ -41,10 +42,12 @@ def _lonlat_to_xyz(lon_deg: np.ndarray, lat_deg: np.ndarray, radius: float = 1.0
 _CACHE = {}
 
 
-def coastline_polydata(radius: float = 1.001):
+def coastline_polydata(radius: float = 1.001) -> Any:
     """Return a ``pv.PolyData`` of coastline polylines slightly above the unit sphere.
 
     Cached: subsequent calls with the same ``radius`` return the same object.
+    The return type is ``pyvista.PolyData`` — typed as ``Any`` to keep the
+    pyvista import lazy.
     """
     if radius in _CACHE:
         return _CACHE[radius]

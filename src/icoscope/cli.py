@@ -14,7 +14,7 @@ def _step(msg: str) -> float:
     return time.time()
 
 
-def main():
+def main() -> None:
     """Parse command-line arguments, build (or load) the grid, and launch the viewer."""
     ap = argparse.ArgumentParser(
         prog="icoscope",

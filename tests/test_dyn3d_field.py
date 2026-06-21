@@ -155,3 +155,85 @@ def test_synthetic_lonlat_mesh_matches_field_count():
 def test_flatten_field_rejects_3d():
     with pytest.raises(ValueError, match="expected 2-D"):
         _flatten_dyn3d_field(np.zeros((2, 3, 4)))
+
+
+def _make_dyn3d_nc_with_extras(path: Path, iim: int, jjm: int) -> None:
+    """Like _make_dyn3d_nc but also adds variables that should be SKIPPED:
+    a vertical-profile field on (presnivs, rlatu, rlonv), a 1-D timeseries,
+    a scalar attribute, and one of the coord vars (which must also be skipped).
+    """
+    iip1, jjp1 = iim + 1, jjm + 1
+    rlonu = np.linspace(-np.pi, np.pi, iip1)
+    rlonv = rlonu + (np.pi / iim)
+    rlatu = np.linspace(np.pi / 2, -np.pi / 2, jjp1)
+    rlatv = (rlatu[:-1] + rlatu[1:]) / 2
+
+    with Dataset(path, "w", format="NETCDF4") as ds:
+        ds.createDimension("rlonu", iip1)
+        ds.createDimension("rlonv", iip1)
+        ds.createDimension("rlatu", jjp1)
+        ds.createDimension("rlatv", jjm)
+        ds.createDimension("time", 2)
+        ds.createDimension("presnivs", 5)
+        ds.createVariable("rlonu", "f8", ("rlonu",))[:] = rlonu
+        ds.createVariable("rlonv", "f8", ("rlonv",))[:] = rlonv
+        ds.createVariable("rlatu", "f8", ("rlatu",))[:] = rlatu
+        ds.createVariable("rlatv", "f8", ("rlatv",))[:] = rlatv
+        ds.createVariable("time", "f8", ("time",))[:] = [0, 1]
+        ds.createVariable("presnivs", "f8", ("presnivs",))[:] = np.arange(5)
+
+        # KEEP: 2-D field on (rlatu, rlonv)
+        ds.createVariable("tas", "f8", ("rlatu", "rlonv"))[:] = np.zeros((jjp1, iip1))
+        # KEEP: time-varying 3-D field on (time, rlatu, rlonv)
+        ds.createVariable("ps", "f8", ("time", "rlatu", "rlonv"))[:] = np.zeros((2, jjp1, iip1))
+        # SKIP: vertical profile on (presnivs, rlatu, rlonv)
+        ds.createVariable("u", "f8", ("presnivs", "rlatu", "rlonv"))[:] = np.zeros((5, jjp1, iip1))
+        # SKIP: 4-D with both time and presnivs
+        ds.createVariable("temp4d", "f8", ("time", "presnivs", "rlatu", "rlonv"))[:] = (
+            np.zeros((2, 5, jjp1, iip1))
+        )
+        # SKIP: 1-D timeseries (no rlatu/rlonv)
+        ds.createVariable("global_mean", "f8", ("time",))[:] = [273.0, 274.0]
+        # SKIP: a control array (matches the descriptive-vars filter)
+        ds.createDimension("ncontrol", 100)
+        ds.createVariable("controle", "f8", ("ncontrol",))[:] = np.zeros(100)
+
+
+def test_load_dyn3d_skips_vertical_and_descriptive_vars():
+    """Vertical-profile fields and descriptive vars are deliberately filtered out."""
+    with tempfile.NamedTemporaryFile(suffix=".nc", delete=False) as f:
+        path = Path(f.name)
+    try:
+        _make_dyn3d_nc_with_extras(path, iim=6, jjm=4)
+        _, cells, _, fields = load_grid(path)
+        assert len(cells) == 6 * 4
+        # Only the two flat (rlatu, rlonv) fields survive
+        assert set(fields) == {"tas", "ps"}
+        assert fields["tas"]["time_varying"] is False
+        assert fields["ps"]["time_varying"] is True
+        # Explicitly check the skipped ones aren't there
+        for skipped in ("u", "temp4d", "global_mean", "controle", "presnivs",
+                        "time", "rlonu", "rlatu", "rlonv", "rlatv"):
+            assert skipped not in fields, f"{skipped!r} should have been skipped"
+    finally:
+        path.unlink(missing_ok=True)
+
+
+def test_load_dyn3d_missing_coord_falls_through_to_icosa():
+    """If any of the four dyn3d coords is missing, the file is NOT recognized."""
+    with tempfile.NamedTemporaryFile(suffix=".nc", delete=False) as f:
+        path = Path(f.name)
+    try:
+        with Dataset(path, "w", format="NETCDF4") as ds:
+            ds.createDimension("rlonu", 4)
+            ds.createDimension("rlatu", 3)
+            ds.createDimension("rlonv", 4)
+            # Missing rlatv → not a dyn3d sniffer hit
+            ds.createVariable("rlonu", "f8", ("rlonu",))[:] = np.zeros(4)
+            ds.createVariable("rlatu", "f8", ("rlatu",))[:] = np.zeros(3)
+            ds.createVariable("rlonv", "f8", ("rlonv",))[:] = np.zeros(4)
+        # Should now fail because the icosa path can't find lon/lat either
+        with pytest.raises(KeyError, match="lon|latitude"):
+            load_grid(path)
+    finally:
+        path.unlink(missing_ok=True)

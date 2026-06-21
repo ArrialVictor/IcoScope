@@ -152,20 +152,20 @@ def _load_dyn3d_grid(
     """Build mesh and collect field metadata from an LMDZ dyn3d NetCDF.
 
     Reads the four ``rlonu/rlonv/rlatu/rlatv`` coord arrays and reconstructs
-    cell polygons via :func:`icoscope.lonlat._build_mesh_from_arrays`. Then
+    cell polygons via :func:`icoscope.lonlat.build_mesh_from_arrays`. Then
     scans all data variables for ones shaped ``(rlatu, rlonv)`` or
     ``(time, rlatu, rlonv)`` and exposes them in the returned ``fields``
     dict so the GUI's "Color by" combo can offer them. Values are fetched on
     demand via :func:`read_field`, which flattens the 2-D ``(j, i)`` layout
     to the cell-flat layout (``j`` outer, ``i`` inner) used by the renderer.
     """
-    from .lonlat import _build_mesh_from_arrays
+    from .lonlat import build_mesh_from_arrays
 
     rlonu = np.asarray(ds.variables["rlonu"][:], dtype=float)
     rlonv = np.asarray(ds.variables["rlonv"][:], dtype=float)
     rlatu = np.asarray(ds.variables["rlatu"][:], dtype=float)
     rlatv = np.asarray(ds.variables["rlatv"][:], dtype=float)
-    verts, cells, centers = _build_mesh_from_arrays(rlonu, rlonv, rlatu, rlatv)
+    verts, cells, centers = build_mesh_from_arrays(rlonu, rlonv, rlatu, rlatv)
 
     fields: dict[str, FieldMeta] = {}
     # A dyn3d data variable lives on the scalar grid (rlatu × rlonv), with an
@@ -180,14 +180,17 @@ def _load_dyn3d_grid(
         if name in coord_var_names:
             continue
         dims = var.dimensions
-        # Must end in (rlatu, rlonv). Anything else (e.g. (presnivs, rlatu, rlonv)
-        # vertical profiles, or 1-D timeseries) is skipped — needs a different
-        # UI than a flat 2-D scalar per cell.
-        if len(dims) < 2 or dims[-2:] != coord_dims:
+        # Must end in (rlatu, rlonv) and have exactly 2 or 3 dims. 4-D
+        # variables on (time, presnivs, rlatu, rlonv) and 3-D vertical
+        # profiles on (presnivs, rlatu, rlonv) are skipped — they need a
+        # vertical-level picker we don't have yet.
+        if dims[-2:] != coord_dims:
             continue
-        time_varying = len(dims) >= 3 and dims[0] in ("time", "time_counter")
-        if not time_varying and len(dims) > 2:
-            # 3-D without time on the outside — vertical level, skip for now.
+        if len(dims) == 2:
+            time_varying = False
+        elif len(dims) == 3 and dims[0] in ("time", "time_counter"):
+            time_varying = True
+        else:
             continue
         fields[name] = {
             "units": getattr(var, "units", ""),
@@ -204,7 +207,7 @@ def _flatten_dyn3d_field(arr: np.ndarray) -> np.ndarray:
     """Flatten a dyn3d 2-D field ``(jjp1, iim_or_iip1)`` to the cell-flat layout.
 
     Cell ordering is ``j`` outer, ``i`` inner (matches
-    :func:`icoscope.lonlat._build_mesh_from_arrays`), so the result is a
+    :func:`icoscope.lonlat.build_mesh_from_arrays`), so the result is a
     1-D array of length ``jjm * iim`` (the mesh's cell count).
 
     Row mapping:
@@ -251,7 +254,7 @@ def read_field(path: str | Path, name: str, time_index: int = 0) -> np.ndarray:
     returns the slice at ``time_index``. For LMDZ dyn3d files (sniffed via
     the presence of all four ``rlonu/rlatu/rlonv/rlatv`` coord arrays), the
     resulting 2-D ``(rlatu, rlonv)`` slice is flattened to the cell-flat
-    layout that matches :func:`icoscope.lonlat._build_mesh_from_arrays`.
+    layout that matches :func:`icoscope.lonlat.build_mesh_from_arrays`.
     """
     from netCDF4 import Dataset
 

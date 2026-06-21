@@ -51,7 +51,7 @@ class _ScrollArea(QScrollArea):
     vertical scrollbar.
     """
 
-    def __init__(self, content: QWidget, parent=None):
+    def __init__(self, content: QWidget, parent: QWidget | None = None):
         super().__init__(parent)
         self.setWidget(content)
         self.setWidgetResizable(True)
@@ -71,7 +71,7 @@ class _AdaptiveTabWidget(QTabWidget):
     sizeHint / minimumSizeHint lets the panel shrink to fit the active tab.
     """
 
-    def __init__(self, parent=None):
+    def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
         self.currentChanged.connect(lambda _i: self.updateGeometry())
 
@@ -296,19 +296,19 @@ class _DisplayBlock(QWidget):
 
     # ── public setters ────────────────────────────────────────────────────
 
-    def set_cmap(self, name):
+    def set_cmap(self, name: str) -> None:
         """Select *name* in the colormap combo box (no-op if not listed)."""
         i = self.cmap_box.findText(name)
         if i >= 0:
             self.cmap_box.setCurrentIndex(i)
 
-    def set_color_by(self, name):
+    def set_color_by(self, name: str) -> None:
         """Select *name* in the color-by combo box (no-op if not listed)."""
         i = self.color_by_box.findText(name)
         if i >= 0:
             self.color_by_box.setCurrentIndex(i)
 
-    def set_color_by_items(self, items):
+    def set_color_by_items(self, items: list[str]) -> None:
         """Repopulate the color-by combo while preserving the current selection."""
         self.color_by_box.blockSignals(True)
         cur = self.color_by_box.currentText()
@@ -318,19 +318,19 @@ class _DisplayBlock(QWidget):
         self.color_by_box.setCurrentIndex(i if i >= 0 else 0)
         self.color_by_box.blockSignals(False)
 
-    def set_edge_color(self, hex_str):
+    def set_edge_color(self, hex_str: str) -> None:
         """Set the edge-color swatch."""
         self.edge_btn.set_color(hex_str)
 
-    def set_coast_color(self, hex_str):
+    def set_coast_color(self, hex_str: str) -> None:
         """Set the coastline-color swatch."""
         self.coast_btn.set_color(hex_str)
 
-    def set_grat_color(self, hex_str):
+    def set_grat_color(self, hex_str: str) -> None:
         """Set the graticule-color swatch."""
         self.grat_btn.set_color(hex_str)
 
-    def set_time_steps(self, n_steps):
+    def set_time_steps(self, n_steps: int) -> None:
         """Configure the time slider for a time-varying field, or hide it."""
         if not self.with_time:
             return
@@ -348,7 +348,7 @@ class _DisplayBlock(QWidget):
             self.speed_row.setVisible(False)
             self.play_btn.setChecked(False)
 
-    def set_time_label(self, idx, total):
+    def set_time_label(self, idx: int, total: int) -> None:
         """Update the ``i/N`` label next to the time slider."""
         if self.with_time:
             self.time_label.setText(f"{idx+1}/{total}")
@@ -387,7 +387,7 @@ class IcoTab(QWidget):
     relax_iters_changed = Signal(int)
     zoom_changed        = Signal(float, float, float)   # factor, lon_deg, lat_deg
 
-    def __init__(self, cmaps, parent=None):
+    def __init__(self, cmaps: list[str], parent: QWidget | None = None):
         super().__init__(parent)
         self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
         v = QVBoxLayout(self)
@@ -463,27 +463,27 @@ class IcoTab(QWidget):
 
     # ── proxy display methods ────────────────────────────────────────────
 
-    def set_cmap(self, name):
+    def set_cmap(self, name: str) -> None:
         """Forward to the inner display block."""
         self.display.set_cmap(name)
 
-    def set_color_by(self, name):
+    def set_color_by(self, name: str) -> None:
         """Forward to the inner display block."""
         self.display.set_color_by(name)
 
-    def set_color_by_items(self, items):
+    def set_color_by_items(self, items: list[str]) -> None:
         """Forward to the inner display block."""
         self.display.set_color_by_items(items)
 
-    def set_edge_color(self, hex_str):
+    def set_edge_color(self, hex_str: str) -> None:
         """Forward to the inner display block."""
         self.display.set_edge_color(hex_str)
 
-    def set_coast_color(self, hex_str):
+    def set_coast_color(self, hex_str: str) -> None:
         """Forward to the inner display block."""
         self.display.set_coast_color(hex_str)
 
-    def set_grat_color(self, hex_str):
+    def set_grat_color(self, hex_str: str) -> None:
         """Forward to the inner display block."""
         self.display.set_grat_color(hex_str)
 
@@ -517,7 +517,7 @@ class IcoTab(QWidget):
                 self.zoom_lat_box.value(),
             )
 
-    def set_zoom(self, factor, lon, lat):
+    def set_zoom(self, factor: float, lon: float, lat: float) -> None:
         """Sync the zoom spinboxes (and toggle state) to the given values."""
         for box, val in ((self.zoom_factor_box, factor),
                          (self.zoom_lon_box, lon),
@@ -538,7 +538,7 @@ class LonLatTab(QWidget):
     # 8 params: clon, clat, grossismx, grossismy, dzoomx, dzoomy, taux, tauy
     lmdz_zoom_changed = Signal(float, float, float, float, float, float, float, float)
 
-    def __init__(self, cmaps, parent=None):
+    def __init__(self, cmaps: list[str], parent: QWidget | None = None):
         super().__init__(parent)
         self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
         v = QVBoxLayout(self)
@@ -662,8 +662,13 @@ class LonLatTab(QWidget):
         """
         self.lmdz_zoom_changed.emit(*self._current_lmdz_values())
 
-    def set_lmdz_zoom(self, clon, clat, grossismx, grossismy,
-                      dzoomx, dzoomy, taux, tauy):
+    def set_lmdz_zoom(
+        self,
+        clon: float, clat: float,
+        grossismx: float, grossismy: float,
+        dzoomx: float, dzoomy: float,
+        taux: float, tauy: float,
+    ) -> None:
         """Sync the LMDZ-zoom spinboxes and toggle state to the given values."""
         # Drop focus before the revert: the line-editor's uncommitted text
         # would otherwise paint over the value we set until focus leaves.
@@ -697,27 +702,27 @@ class LonLatTab(QWidget):
 
     # ── proxy display methods ────────────────────────────────────────────
 
-    def set_cmap(self, name):
+    def set_cmap(self, name: str) -> None:
         """Forward to the inner display block."""
         self.display.set_cmap(name)
 
-    def set_color_by(self, name):
+    def set_color_by(self, name: str) -> None:
         """Forward to the inner display block."""
         self.display.set_color_by(name)
 
-    def set_color_by_items(self, items):
+    def set_color_by_items(self, items: list[str]) -> None:
         """Forward to the inner display block."""
         self.display.set_color_by_items(items)
 
-    def set_edge_color(self, hex_str):
+    def set_edge_color(self, hex_str: str) -> None:
         """Forward to the inner display block."""
         self.display.set_edge_color(hex_str)
 
-    def set_coast_color(self, hex_str):
+    def set_coast_color(self, hex_str: str) -> None:
         """Forward to the inner display block."""
         self.display.set_coast_color(hex_str)
 
-    def set_grat_color(self, hex_str):
+    def set_grat_color(self, hex_str: str) -> None:
         """Forward to the inner display block."""
         self.display.set_grat_color(hex_str)
 
@@ -728,7 +733,7 @@ class FileTab(QWidget):
     open_file_clicked  = Signal()
     close_file_clicked = Signal()
 
-    def __init__(self, cmaps, parent=None):
+    def __init__(self, cmaps: list[str], parent: QWidget | None = None):
         super().__init__(parent)
         self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
         v = QVBoxLayout(self)
@@ -767,35 +772,35 @@ class FileTab(QWidget):
 
     # ── proxy display methods ────────────────────────────────────────────
 
-    def set_cmap(self, name):
+    def set_cmap(self, name: str) -> None:
         """Forward to the inner display block."""
         self.display.set_cmap(name)
 
-    def set_color_by(self, name):
+    def set_color_by(self, name: str) -> None:
         """Forward to the inner display block."""
         self.display.set_color_by(name)
 
-    def set_color_by_items(self, items):
+    def set_color_by_items(self, items: list[str]) -> None:
         """Forward to the inner display block."""
         self.display.set_color_by_items(items)
 
-    def set_edge_color(self, hex_str):
+    def set_edge_color(self, hex_str: str) -> None:
         """Forward to the inner display block."""
         self.display.set_edge_color(hex_str)
 
-    def set_coast_color(self, hex_str):
+    def set_coast_color(self, hex_str: str) -> None:
         """Forward to the inner display block."""
         self.display.set_coast_color(hex_str)
 
-    def set_grat_color(self, hex_str):
+    def set_grat_color(self, hex_str: str) -> None:
         """Forward to the inner display block."""
         self.display.set_grat_color(hex_str)
 
-    def set_time_steps(self, n_steps):
+    def set_time_steps(self, n_steps: int) -> None:
         """Forward to the inner display block."""
         self.display.set_time_steps(n_steps)
 
-    def set_time_label(self, idx, total):
+    def set_time_label(self, idx: int, total: int) -> None:
         """Forward to the inner display block."""
         self.display.set_time_label(idx, total)
 
@@ -813,7 +818,7 @@ class FileTab(QWidget):
         n_fields: int = 0,
         n_time_steps: int = 0,
         attrs: dict | None = None,
-    ):
+    ) -> None:
         """Populate the File tab's summary block.
 
         Pass empty path (or call with no args) to clear everything back to the

@@ -61,13 +61,27 @@ class _TabState:
 class MainWindow(QMainWindow):
     """Top-level IcoScope window: 3D sphere view + right-side control panel."""
 
-    def __init__(self, verts, cells, centers, initial_n=8, relax=True,
-                 zoom_factor=1.0, zoom_lon=0.0, zoom_lat=45.0,
-                 iim=96, jjm=95,
-                 lmdz_clon=0.0, lmdz_clat=0.0,
-                 lmdz_grossismx=1.0, lmdz_grossismy=1.0,
-                 lmdz_dzoomx=0.0, lmdz_dzoomy=0.0,
-                 lmdz_taux=3.0, lmdz_tauy=3.0):
+    def __init__(
+        self,
+        verts: np.ndarray,
+        cells: list[list[int]],
+        centers: np.ndarray,
+        initial_n: int = 8,
+        relax: bool = True,
+        zoom_factor: float = 1.0,
+        zoom_lon: float = 0.0,
+        zoom_lat: float = 45.0,
+        iim: int = 96,
+        jjm: int = 95,
+        lmdz_clon: float = 0.0,
+        lmdz_clat: float = 0.0,
+        lmdz_grossismx: float = 1.0,
+        lmdz_grossismy: float = 1.0,
+        lmdz_dzoomx: float = 0.0,
+        lmdz_dzoomy: float = 0.0,
+        lmdz_taux: float = 3.0,
+        lmdz_tauy: float = 3.0,
+    ):
         super().__init__()
         self.setWindowTitle("IcoScope")
         icon_path = os.path.join(os.path.dirname(__file__), "icon.png")
@@ -1260,13 +1274,28 @@ class MainWindow(QMainWindow):
                                  f"{e}\n\nThis needs a VTK build with GL2PS support.")
 
 
-def run(verts, cells, centers, initial_n=8, relax=True, file_path=None,
-        zoom_factor=1.0, zoom_lon=0.0, zoom_lat=45.0,
-        initial_grid="ico", iim=96, jjm=95,
-        lmdz_clon=0.0, lmdz_clat=0.0,
-        lmdz_grossismx=1.0, lmdz_grossismy=1.0,
-        lmdz_dzoomx=0.0, lmdz_dzoomy=0.0,
-        lmdz_taux=3.0, lmdz_tauy=3.0):
+def run(
+    verts: np.ndarray,
+    cells: list[list[int]],
+    centers: np.ndarray,
+    initial_n: int = 8,
+    relax: bool = True,
+    file_path: str | None = None,
+    zoom_factor: float = 1.0,
+    zoom_lon: float = 0.0,
+    zoom_lat: float = 45.0,
+    initial_grid: str = "ico",
+    iim: int = 96,
+    jjm: int = 95,
+    lmdz_clon: float = 0.0,
+    lmdz_clat: float = 0.0,
+    lmdz_grossismx: float = 1.0,
+    lmdz_grossismy: float = 1.0,
+    lmdz_dzoomx: float = 0.0,
+    lmdz_dzoomy: float = 0.0,
+    lmdz_taux: float = 3.0,
+    lmdz_tauy: float = 3.0,
+) -> None:
     """Create the QApplication, show the main window, and start the Qt event loop."""
     app = QApplication.instance() or QApplication(sys.argv)
     # Set the icon on the QApplication BEFORE any window appears — that's the
