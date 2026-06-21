@@ -1061,6 +1061,12 @@ class MainWindow(QMainWindow):
         self.panel.file_tab.set_color_by_items(SYNTHETIC_COLOR_BY)
         self._file_state.color_by = "None"
         self.panel.file_tab.set_color_by("None")
+        # color_by = "None" → grey out cmap/colorbar/center-zero, matching
+        # the initial state. set_color_by blocks signals so _on_color_by
+        # wouldn't fire otherwise.
+        self.panel.file_tab.display.center_cb.setEnabled(False)
+        self.panel.file_tab.display.bar_cb.setEnabled(False)
+        self.panel.file_tab.display.cmap_box.setEnabled(False)
         self.panel.file_tab.set_time_steps(0)
         self.panel.file_tab.set_file_loaded(False)
         self.panel.file_tab.set_file_info()
@@ -1081,6 +1087,15 @@ class MainWindow(QMainWindow):
             self._file_state.color_by = first
         else:
             self._file_state.color_by = "None"
+        # _on_color_by is what normally toggles these on/off, but set_color_by
+        # above blocks signals to avoid recursion. Sync them by hand so the
+        # cmap/colorbar/center-zero widgets are usable as soon as a file
+        # loads (via --file at startup, via Open NetCDF, or via tab-switch
+        # back to File after a previous load).
+        enable = self._file_state.color_by != "None"
+        self.panel.file_tab.display.center_cb.setEnabled(enable)
+        self.panel.file_tab.display.bar_cb.setEnabled(enable)
+        self.panel.file_tab.display.cmap_box.setEnabled(enable)
         self._refresh_scalars()
         self._mesh = self._to_polydata()
         self._cell_locator = None
