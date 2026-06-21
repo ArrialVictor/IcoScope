@@ -26,7 +26,7 @@ from .controls import ControlPanel
 from .graticule import graticule_polydata
 from .grid import goldberg
 from .lonlat import latlon_mesh
-from .tabs import SYNTHETIC_COLOR_BY, Tab
+from .tabs import Tab
 from .themes import CMAPS, THEMES
 
 
@@ -1082,7 +1082,9 @@ class MainWindow(QMainWindow):
         self.file_path = None
         self._file_state.file_fields = {}
         self._file_cache = None
-        self.panel.file_tab.set_color_by_items(SYNTHETIC_COLOR_BY)
+        # File tab's Color by only ever lists file fields, never synthetic
+        # options — on unload, just "None" remains.
+        self.panel.file_tab.set_color_by_items(["None"])
         self._file_state.color_by = "None"
         self.panel.file_tab.set_color_by("None")
         # color_by = "None" → grey out cmap/colorbar/center-zero, matching

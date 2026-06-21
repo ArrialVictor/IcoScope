@@ -779,6 +779,9 @@ class FileTab(QWidget):
 
         # ── Display block (with time slider) ───────
         self.display = _DisplayBlock(cmaps, with_time=True)
+        # File tab's Color by is only ever the loaded file's fields. Replace
+        # the default synthetic options that _DisplayBlock pre-populates.
+        self.display.set_color_by_items(["None"])
         v.addWidget(self.display)
         _forward_signals(self, self.display,
                          _DISPLAY_SIGNALS_BASE + _DISPLAY_SIGNALS_TIME)
