@@ -15,10 +15,12 @@ from qtpy.QtWidgets import (
     QComboBox,
     QDoubleSpinBox,
     QFormLayout,
+    QFrame,
     QGroupBox,
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QSlider,
     QSpinBox,
@@ -35,6 +37,30 @@ from .controls import ColorButton, _expand
 SYNTHETIC_COLOR_BY = [
     "None", "Latitude", "Cell kind", "Mock temperature", "Realistic temperature",
 ]
+
+
+class _ScrollArea(QScrollArea):
+    """QScrollArea wrapping a tab's content so overflow becomes scrollable.
+
+    Reports the wrapped widget's sizeHint so it cooperates with
+    ``_AdaptiveTabWidget``'s height-following logic — when the panel has
+    enough vertical space the scroll area takes its content's natural
+    size (no scrollbar). When the panel is shorter than the content
+    needs, the scroll area accepts the shorter allocation and shows a
+    vertical scrollbar.
+    """
+
+    def __init__(self, content: QWidget, parent=None):
+        super().__init__(parent)
+        self.setWidget(content)
+        self.setWidgetResizable(True)
+        self.setFrameShape(QFrame.NoFrame)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+
+    def sizeHint(self):
+        w = self.widget()
+        return w.sizeHint() if w is not None else super().sizeHint()
 
 
 class _AdaptiveTabWidget(QTabWidget):

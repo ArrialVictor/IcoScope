@@ -61,7 +61,7 @@ class ControlPanel(QWidget):
     def __init__(self, cmaps, parent=None):
         super().__init__(parent)
         # late import: tabs.py imports ColorButton from this module
-        from .tabs import FileTab, IcoTab, LonLatTab, _AdaptiveTabWidget
+        from .tabs import FileTab, IcoTab, LonLatTab, _AdaptiveTabWidget, _ScrollArea
 
         self.setFixedWidth(320)
         outer = QVBoxLayout(self)
@@ -70,9 +70,13 @@ class ControlPanel(QWidget):
         self.ico_tab = IcoTab(cmaps)
         self.lonlat_tab = LonLatTab(cmaps)
         self.file_tab = FileTab(cmaps)
-        self.tabs.addTab(self.ico_tab, "Ico")
-        self.tabs.addTab(self.lonlat_tab, "LonLat")
-        self.tabs.addTab(self.file_tab, "File")
+        # Wrap each tab in a scroll area — LonLat in particular now has 10+
+        # zoom params plus the display block, easily exceeding the window
+        # height. Adaptive sizing still works (the scroll area reports the
+        # wrapped widget's sizeHint) so short tabs don't grow.
+        self.tabs.addTab(_ScrollArea(self.ico_tab), "Ico")
+        self.tabs.addTab(_ScrollArea(self.lonlat_tab), "LonLat")
+        self.tabs.addTab(_ScrollArea(self.file_tab), "File")
         outer.addWidget(self.tabs)
 
         outer.addStretch(1)
