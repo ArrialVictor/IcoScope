@@ -8,6 +8,7 @@ The shared internal ``_DisplayBlock`` builds the standard display controls;
 ``IcoTab`` and ``LonLatTab`` instantiate it without the time slider,
 ``FileTab`` with.
 """
+from enum import IntEnum
 from os.path import basename
 
 from qtpy.QtCore import Qt, Signal
@@ -31,6 +32,18 @@ from qtpy.QtWidgets import (
 )
 
 from .controls import ColorButton, _expand
+
+
+class Tab(IntEnum):
+    """Side-panel tab indices.
+
+    The integer values match the ``addTab`` order in
+    :class:`icoscope.controls.ControlPanel`.
+    """
+
+    ICO = 0
+    LONLAT = 1
+    FILE = 2
 
 # Color-by options shown for the synthetic Ico mesh (no NetCDF loaded). Once a
 # file is loaded, the File tab's combo is replaced by "None" + the file's own
@@ -306,7 +319,9 @@ class _DisplayBlock(QWidget):
         """Select *name* in the color-by combo box (no-op if not listed)."""
         i = self.color_by_box.findText(name)
         if i >= 0:
+            self.color_by_box.blockSignals(True)
             self.color_by_box.setCurrentIndex(i)
+            self.color_by_box.blockSignals(False)
 
     def set_color_by_items(self, items: list[str]) -> None:
         """Repopulate the color-by combo while preserving the current selection."""
@@ -764,6 +779,9 @@ class FileTab(QWidget):
 
         # ── Display block (with time slider) ───────
         self.display = _DisplayBlock(cmaps, with_time=True)
+        # File tab's Color by is only ever the loaded file's fields. Replace
+        # the default synthetic options that _DisplayBlock pre-populates.
+        self.display.set_color_by_items(["None"])
         v.addWidget(self.display)
         _forward_signals(self, self.display,
                          _DISPLAY_SIGNALS_BASE + _DISPLAY_SIGNALS_TIME)
