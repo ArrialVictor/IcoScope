@@ -4,6 +4,7 @@ import sys
 import time
 
 from .grid import goldberg
+from .lonlat import latlon_mesh
 
 
 def _step(msg: str) -> float:
@@ -25,6 +26,16 @@ def main():
                           "(default 40 — matches ICOLMDZ's typical low-res nbp=40)")
     src.add_argument("--file", "-f", type=str, metavar="PATH",
                      help="load grid from NetCDF file")
+    ap.add_argument("--grid", choices=("ico", "lonlat"), default="ico",
+                    help="initial synthetic mesh family (default 'ico'). "
+                         "'lonlat' builds an LMDZ dyn3d-style regular lat-lon "
+                         "mesh; -n and --zoom-* are ignored in that mode.")
+    ap.add_argument("--iim", type=int, default=96, metavar="N",
+                    help="LonLat: number of distinct longitudes (default 96, "
+                         "LMDZ low-res). Only used with --grid lonlat.")
+    ap.add_argument("--jjm", type=int, default=95, metavar="N",
+                    help="LonLat: number of latitude bands (default 95, "
+                         "LMDZ low-res). Only used with --grid lonlat.")
     ap.add_argument("--no-relax", action="store_true",
                     help="don't run spring-relaxation on the synthetic grid")
     ap.add_argument("--zoom-factor", type=float, default=1.0, metavar="F",
@@ -57,6 +68,16 @@ def main():
                 f"  loaded {len(cells)} cells from {args.file} "
                 f"({time.time()-t0:.1f}s)\n"
             )
+    elif args.grid == "lonlat":
+        t1 = log(f"building synthetic lat-lon grid iim={args.iim}, jjm={args.jjm}")
+        verts, cells, centers = latlon_mesh(iim=args.iim, jjm=args.jjm)
+        if not args.quiet:
+            sys.stderr.write(
+                f"  {len(cells)} cells "
+                f"({sum(len(c)==3 for c in cells)} polar triangles, "
+                f"{sum(len(c)==4 for c in cells)} quads) "
+                f"in {time.time()-t1:.1f}s\n"
+            )
     else:
         zoom_note = (f", Schmidt zoom factor={args.zoom_factor} "
                      f"at ({args.zoom_lon}, {args.zoom_lat})"
@@ -84,7 +105,8 @@ def main():
     log("opening window")
     run(verts, cells, centers, initial_n=args.generate, relax=not args.no_relax,
         file_path=args.file,
-        zoom_factor=args.zoom_factor, zoom_lon=args.zoom_lon, zoom_lat=args.zoom_lat)
+        zoom_factor=args.zoom_factor, zoom_lon=args.zoom_lon, zoom_lat=args.zoom_lat,
+        initial_grid=args.grid, iim=args.iim, jjm=args.jjm)
 
 
 if __name__ == "__main__":

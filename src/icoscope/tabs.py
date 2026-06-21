@@ -504,18 +504,70 @@ class IcoTab(QWidget):
 
 
 class LonLatTab(QWidget):
-    """LonLat tab placeholder (real content lands in PR #4)."""
+    """LonLat tab: synthetic dyn3d-style regular lat-lon mesh + display controls."""
 
-    def __init__(self, parent=None):
+    iim_changed = Signal(int)
+    jjm_changed = Signal(int)
+
+    def __init__(self, cmaps, parent=None):
         super().__init__(parent)
         self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
         v = QVBoxLayout(self)
         v.setContentsMargins(6, 6, 6, 6)
-        placeholder = QLabel("LonLat mesh (coming soon)")
-        placeholder.setAlignment(Qt.AlignCenter)
-        placeholder.setStyleSheet("color: #888; font-style: italic; padding: 24px;")
-        v.addWidget(placeholder)
+
+        # ── Grid params ────────────────────────────
+        gs = QGroupBox("Grid")
+        gl = QFormLayout(gs)
+        gl.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+
+        self.iim_box = QSpinBox()
+        self.iim_box.setRange(2, 720)
+        self.iim_box.setValue(96)
+        self.iim_box.setKeyboardTracking(False)
+        self.iim_box.valueChanged.connect(self.iim_changed)
+        gl.addRow("Longitudes (iim)", self.iim_box)
+
+        self.jjm_box = QSpinBox()
+        self.jjm_box.setRange(1, 360)
+        self.jjm_box.setValue(95)
+        self.jjm_box.setKeyboardTracking(False)
+        self.jjm_box.valueChanged.connect(self.jjm_changed)
+        gl.addRow("Latitude bands (jjm)", self.jjm_box)
+
+        v.addWidget(gs)
+
+        # ── Display block ──────────────────────────
+        self.display = _DisplayBlock(cmaps, with_time=False)
+        v.addWidget(self.display)
+        _forward_signals(self, self.display, _DISPLAY_SIGNALS_BASE)
+
         v.addStretch(1)
+
+    # ── proxy display methods ────────────────────────────────────────────
+
+    def set_cmap(self, name):
+        """Forward to the inner display block."""
+        self.display.set_cmap(name)
+
+    def set_color_by(self, name):
+        """Forward to the inner display block."""
+        self.display.set_color_by(name)
+
+    def set_color_by_items(self, items):
+        """Forward to the inner display block."""
+        self.display.set_color_by_items(items)
+
+    def set_edge_color(self, hex_str):
+        """Forward to the inner display block."""
+        self.display.set_edge_color(hex_str)
+
+    def set_coast_color(self, hex_str):
+        """Forward to the inner display block."""
+        self.display.set_coast_color(hex_str)
+
+    def set_grat_color(self, hex_str):
+        """Forward to the inner display block."""
+        self.display.set_grat_color(hex_str)
 
 
 class FileTab(QWidget):

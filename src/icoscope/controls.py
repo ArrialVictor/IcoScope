@@ -68,7 +68,7 @@ class ControlPanel(QWidget):
 
         self.tabs = _AdaptiveTabWidget()
         self.ico_tab = IcoTab(cmaps)
-        self.lonlat_tab = LonLatTab()
+        self.lonlat_tab = LonLatTab(cmaps)
         self.file_tab = FileTab(cmaps)
         self.tabs.addTab(self.ico_tab, "Ico")
         self.tabs.addTab(self.lonlat_tab, "LonLat")
