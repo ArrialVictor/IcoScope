@@ -100,6 +100,23 @@ opposite. The implementation mirrors DYNAMICO's `schmidt_transform` (Guo &
 Drake, *JCP* 2005, eq. 12). You can also adjust the same parameters live
 from the "Synthetic zoom (Schmidt)" group in the side panel.
 
+### LMDZ-style zoom (LonLat tab)
+
+The synthetic lat-lon mesh supports LMDZ's classical tanh-zoom (the
+`clon, clat, grossismx, grossismy, dzoomx, dzoomy, taux, tauy` namelist
+family from `libf/dyn3d_common/fxhyp_m.f90` / `fyhyp_m.f90`).
+
+```bash
+icoscope --grid lonlat --lmdz-grossismx 4 --lmdz-dzoomx 0.1 --lmdz-clon 2 --lmdz-clat 48
+```
+
+`--lmdz-grossismx 1.0` (the default) is the identity. Higher values
+concentrate cells inside the zoom window of half-width `dzoomx`
+(a fraction of the full 2π longitude range). The transition sharpness
+is controlled by `taux`. Latitude has matching `--lmdz-grossismy`,
+`--lmdz-dzoomy`, and `--lmdz-tauy`. All eight parameters are live in
+the "Synthetic zoom (LMDZ tanh)" group on the LonLat tab.
+
 > ℹ️ **The very first launch after install can take 10–15 seconds** while
 > Python compiles every dependency's bytecode and the OS loads VTK's large
 > binary libraries from disk for the first time. Subsequent launches reuse

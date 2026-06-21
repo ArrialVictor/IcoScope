@@ -63,7 +63,11 @@ class MainWindow(QMainWindow):
 
     def __init__(self, verts, cells, centers, initial_n=8, relax=True,
                  zoom_factor=1.0, zoom_lon=0.0, zoom_lat=45.0,
-                 iim=96, jjm=95):
+                 iim=96, jjm=95,
+                 lmdz_clon=0.0, lmdz_clat=0.0,
+                 lmdz_grossismx=1.0, lmdz_grossismy=1.0,
+                 lmdz_dzoomx=0.0, lmdz_dzoomy=0.0,
+                 lmdz_taux=3.0, lmdz_tauy=3.0):
         super().__init__()
         self.setWindowTitle("IcoScope")
         icon_path = os.path.join(os.path.dirname(__file__), "icon.png")
@@ -85,6 +89,15 @@ class MainWindow(QMainWindow):
         # LonLat-tab synthetic mesh size (LMDZ low-res defaults).
         self.iim = int(iim)
         self.jjm = int(jjm)
+        # LonLat-tab LMDZ tanh-zoom parameters (identity by default).
+        self.lmdz_clon = float(lmdz_clon)
+        self.lmdz_clat = float(lmdz_clat)
+        self.lmdz_grossismx = float(lmdz_grossismx)
+        self.lmdz_grossismy = float(lmdz_grossismy)
+        self.lmdz_dzoomx = float(lmdz_dzoomx)
+        self.lmdz_dzoomy = float(lmdz_dzoomy)
+        self.lmdz_taux = float(lmdz_taux)
+        self.lmdz_tauy = float(lmdz_tauy)
         self.transparent_export = False
 
         # Theme is window-level (background colour + default overlay tints).
@@ -127,6 +140,12 @@ class MainWindow(QMainWindow):
         lonlat.jjm_box.blockSignals(True)
         lonlat.jjm_box.setValue(self.jjm)
         lonlat.jjm_box.blockSignals(False)
+        lonlat.set_lmdz_zoom(
+            self.lmdz_clon, self.lmdz_clat,
+            self.lmdz_grossismx, self.lmdz_grossismy,
+            self.lmdz_dzoomx, self.lmdz_dzoomy,
+            self.lmdz_taux, self.lmdz_tauy,
+        )
         display_tabs = (self.panel.ico_tab, self.panel.lonlat_tab, self.panel.file_tab)
         for tab in display_tabs:
             tab.set_cmap(default_cmap)
@@ -157,6 +176,7 @@ class MainWindow(QMainWindow):
         self.panel.ico_tab.zoom_changed.connect(self._on_zoom)
         self.panel.lonlat_tab.iim_changed.connect(self._on_iim)
         self.panel.lonlat_tab.jjm_changed.connect(self._on_jjm)
+        self.panel.lonlat_tab.lmdz_zoom_changed.connect(self._on_lmdz_zoom)
         self.panel.file_tab.open_file_clicked.connect(self._on_open_file)
         self.panel.file_tab.close_file_clicked.connect(self._on_close_file)
         self.panel.file_tab.time_changed.connect(self._on_time_changed)
@@ -856,7 +876,11 @@ class MainWindow(QMainWindow):
 
     def _lonlat_params_key(self) -> tuple:
         """Cache key identifying the current LonLat-tab mesh parameters."""
-        return (self.iim, self.jjm)
+        return (self.iim, self.jjm,
+                self.lmdz_clon, self.lmdz_clat,
+                self.lmdz_grossismx, self.lmdz_grossismy,
+                self.lmdz_dzoomx, self.lmdz_dzoomy,
+                self.lmdz_taux, self.lmdz_tauy)
 
     def _regen_lonlat(self):
         """Build (or reuse) the synthetic LonLat mesh and render it."""
@@ -867,7 +891,18 @@ class MainWindow(QMainWindow):
             self.cells = cached["cells"]
             self.centers = cached["centers"]
         else:
-            v, c, ctr = latlon_mesh(iim=self.iim, jjm=self.jjm)
+            try:
+                v, c, ctr = latlon_mesh(
+                    iim=self.iim, jjm=self.jjm,
+                    clon=self.lmdz_clon, clat=self.lmdz_clat,
+                    grossismx=self.lmdz_grossismx,
+                    grossismy=self.lmdz_grossismy,
+                    dzoomx=self.lmdz_dzoomx, dzoomy=self.lmdz_dzoomy,
+                    taux=self.lmdz_taux, tauy=self.lmdz_tauy,
+                )
+            except ValueError as e:
+                self.statusBar().showMessage(f"LMDZ zoom rejected: {e}", 5000)
+                return
             self.verts, self.cells, self.centers = v, c, np.asarray(ctr)
             self._lonlat_cache = {
                 "params": key,
@@ -889,6 +924,18 @@ class MainWindow(QMainWindow):
 
     def _on_jjm(self, val):
         self.jjm = int(val)
+        if self._on_lonlat_tab():
+            self._regen_lonlat()
+
+    def _on_lmdz_zoom(self, clon, clat, gx, gy, dx, dy, tx, ty):
+        self.lmdz_clon = float(clon)
+        self.lmdz_clat = float(clat)
+        self.lmdz_grossismx = float(gx)
+        self.lmdz_grossismy = float(gy)
+        self.lmdz_dzoomx = float(dx)
+        self.lmdz_dzoomy = float(dy)
+        self.lmdz_taux = float(tx)
+        self.lmdz_tauy = float(ty)
         if self._on_lonlat_tab():
             self._regen_lonlat()
 
@@ -1135,7 +1182,11 @@ class MainWindow(QMainWindow):
 
 def run(verts, cells, centers, initial_n=8, relax=True, file_path=None,
         zoom_factor=1.0, zoom_lon=0.0, zoom_lat=45.0,
-        initial_grid="ico", iim=96, jjm=95):
+        initial_grid="ico", iim=96, jjm=95,
+        lmdz_clon=0.0, lmdz_clat=0.0,
+        lmdz_grossismx=1.0, lmdz_grossismy=1.0,
+        lmdz_dzoomx=0.0, lmdz_dzoomy=0.0,
+        lmdz_taux=3.0, lmdz_tauy=3.0):
     """Create the QApplication, show the main window, and start the Qt event loop."""
     app = QApplication.instance() or QApplication(sys.argv)
     # Set the icon on the QApplication BEFORE any window appears — that's the
@@ -1148,12 +1199,16 @@ def run(verts, cells, centers, initial_n=8, relax=True, file_path=None,
     app.setApplicationDisplayName("IcoScope")
     w = MainWindow(verts, cells, centers, initial_n=initial_n, relax=relax,
                    zoom_factor=zoom_factor, zoom_lon=zoom_lon, zoom_lat=zoom_lat,
-                   iim=iim, jjm=jjm)
+                   iim=iim, jjm=jjm,
+                   lmdz_clon=lmdz_clon, lmdz_clat=lmdz_clat,
+                   lmdz_grossismx=lmdz_grossismx, lmdz_grossismy=lmdz_grossismy,
+                   lmdz_dzoomx=lmdz_dzoomx, lmdz_dzoomy=lmdz_dzoomy,
+                   lmdz_taux=lmdz_taux, lmdz_tauy=lmdz_tauy)
     if initial_grid == "lonlat" and not file_path:
         # Seed the lonlat cache with the mesh the CLI already built, then
         # switch tabs (which triggers _regen_lonlat → cache hit → render).
         w._lonlat_cache = {
-            "params": (w.iim, w.jjm),
+            "params": w._lonlat_params_key(),
             "verts": verts,
             "cells": cells,
             "centers": np.asarray(centers),
