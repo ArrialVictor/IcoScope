@@ -233,6 +233,12 @@ class MainWindow(QMainWindow):
 
     # ── rendering ─────────────────────────────────
     def _build_scene(self):
+        # Defer to the empty-sphere path when there's no mesh to render
+        # (File tab pre-load, LonLat placeholder). This makes overlay
+        # toggles a no-op in that state instead of crashing.
+        if self._mesh is None:
+            self._render_empty_sphere()
+            return
         theme = THEMES[self.theme_name]
         self.plotter.set_background(theme["bg"])
         st = self.state
@@ -913,13 +919,37 @@ class MainWindow(QMainWindow):
             if self._file_cache is not None:
                 self._activate_file_view()
             else:
-                # No file loaded — still rebuild so the file tab's display
-                # state (overlays etc.) takes effect on whatever's rendered.
-                self._build_scene()
+                # No file loaded — show a plain empty sphere instead of
+                # whatever was last rendered. The File tab's overlay
+                # settings are ignored in this state since there's no
+                # geographic data to overlay onto.
+                self._render_empty_sphere()
         else:                  # LonLat placeholder
-            self._build_scene()
+            self._render_empty_sphere()
         # Per-tab colour overrides may differ → refresh swatches.
         self._sync_color_buttons()
+
+    def _render_empty_sphere(self):
+        """Render a plain blank sphere (no cells, no overlays).
+
+        Used when a tab is active but has no mesh to show yet — the
+        File tab before any NetCDF is loaded, and the LonLat placeholder
+        tab. Conveys "this is the canvas, populate it" without leaking
+        stale geometry from another tab into the view.
+        """
+        self.plotter.clear()
+        self.plotter.set_background(THEMES[self.theme_name]["bg"])
+        sphere = pv.Sphere(radius=1.0, theta_resolution=64, phi_resolution=32)
+        # Subtle, neutral fill — distinct from any colormap output.
+        self.plotter.add_mesh(sphere, name="empty",
+                              color="#777777", show_edges=False,
+                              smooth_shading=True, reset_camera=False)
+        self._mesh = None
+        self.scalars = None
+        self._cell_locator = None
+        self._clear_highlight()
+        self.plotter.render()
+        self._update_status()
 
     def _on_time_changed(self, idx):
         if idx == self._file_state.time_index:
