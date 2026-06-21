@@ -4,7 +4,7 @@ from collections import Counter
 import numpy as np
 import pytest
 
-from icoscope.lonlat import latlon_mesh
+from icoscope.lonlat import _tanh_coord_1d, latlon_mesh
 
 
 @pytest.mark.parametrize(("iim", "jjm"), [(4, 3), (8, 5), (20, 10), (96, 95)])
@@ -64,9 +64,59 @@ def test_polar_cell_centers_coincide_with_pole_vertex():
         assert np.allclose(centers[k], south_pole, atol=1e-12)
 
 
-def test_default_lmdz_low_res():
-    """Defaults are LMDZ's commonly cited low-res ``iim=96, jjm=95``."""
+def test_default_lmdz_low_res_sphere_is_a_sphere():
+    """Defaults ``iim=96, jjm=95`` produce a valid mesh whose cell-area sum ≈ 4π.
+
+    Stronger than just "shapes are right" — checks that the assembled mesh
+    covers the unit sphere with the expected total area.
+    """
     verts, cells, centers = latlon_mesh()
     assert len(cells) == 96 * 95
-    assert len(centers) == 96 * 95
-    assert verts.shape[1] == 3
+
+    def cell_area(cell: list[int]) -> float:
+        # Spherical area via triangle fan from the first vertex; sufficient
+        # for both triangles (1 fan triangle) and quads (2 fan triangles).
+        pts = verts[cell]
+        area = 0.0
+        for i in range(1, len(pts) - 1):
+            a, b, c = pts[0], pts[i], pts[i + 1]
+            area += 0.5 * np.linalg.norm(np.cross(b - a, c - a))
+        return area
+
+    total = sum(cell_area(c) for c in cells)
+    # A flat-triangle estimate is slightly less than the spherical area; the
+    # cells are tiny so the discrepancy is ~0.5%. A real bug (missing band,
+    # wrong wrap) would deviate by orders of magnitude.
+    assert 0.99 * 4 * np.pi < total < 1.01 * 4 * np.pi
+
+
+def test_minimum_sizes_do_not_crash():
+    """``latlon_mesh`` accepts very small ``(iim, jjm)`` without error."""
+    # iim=2, jjm=1 hits the degenerate single-band case in
+    # build_mesh_from_arrays (every cell is a pole-to-pole 'bowtie').
+    verts, cells, centers = latlon_mesh(iim=2, jjm=1)
+    assert len(cells) == 2
+    # iim=2, jjm=2 is just the two polar bands meeting at the equator.
+    verts, cells, centers = latlon_mesh(iim=2, jjm=2)
+    assert len(cells) == 4
+
+
+def test_tanh_coord_arrays_are_monotonic():
+    """The tanh-zoom coord generator must produce strictly increasing edges
+    and centers — non-monotone output would break the cell-corner ordering
+    and the polygon mesh."""
+    edges, centers = _tanh_coord_1d(
+        n=20, half_domain=np.pi, center=0.0,
+        grossism=2.0, dzoom_frac=0.05, tau=3.0,
+        is_latitude=False, error_name="x",
+    )
+    assert np.all(np.diff(edges) > 0), "longitude edges not monotonic"
+    assert np.all(np.diff(centers) > 0), "longitude centers not monotonic"
+
+    edges_y, centers_y = _tanh_coord_1d(
+        n=10, half_domain=np.pi / 2, center=0.0,
+        grossism=2.0, dzoom_frac=0.05, tau=3.0,
+        is_latitude=True, error_name="y",
+    )
+    assert np.all(np.diff(edges_y) > 0), "latitude edges not monotonic"
+    assert np.all(np.diff(centers_y) > 0), "latitude centers not monotonic"

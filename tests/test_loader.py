@@ -5,8 +5,9 @@ import sys
 
 import numpy as np
 import pytest
+from netCDF4 import Dataset
 
-from icoscope.loader import load_grid, read_field
+from icoscope.loader import describe, load_grid, read_field, read_global_attrs
 
 
 @pytest.fixture(scope="module")
@@ -52,11 +53,46 @@ def test_read_field_time_slice(test_nc):
     assert not np.allclose(a, b)
 
 
-def test_load_grid_raises_on_missing_variables(tmp_path):
-    """A non-NetCDF or schema-incompatible file should raise."""
-    bad = tmp_path / "bad.nc"
-    bad.write_bytes(b"not a netcdf")
-    # netCDF4 may raise OSError / KeyError / ValueError depending on what's wrong;
-    # the only contract is that load_grid does not silently succeed.
-    with pytest.raises((OSError, KeyError, ValueError)):
-        load_grid(str(bad))
+def test_load_grid_raises_keyerror_when_lon_missing(tmp_path):
+    """A valid NetCDF without lon/longitude should raise a KeyError naming the
+    candidate variables it tried."""
+    path = tmp_path / "no_lon.nc"
+    with Dataset(path, "w", format="NETCDF4") as ds:
+        # Create a valid file but without any of the lon-candidate variables.
+        ds.createDimension("cell", 4)
+        ds.createDimension("nvertex", 6)
+        ds.createVariable("lat", "f8", ("cell",))[:] = [0, 30, -30, 60]
+        ds.createVariable("bounds_lon", "f8", ("cell", "nvertex"))[:] = np.zeros((4, 6))
+        ds.createVariable("bounds_lat", "f8", ("cell", "nvertex"))[:] = np.zeros((4, 6))
+    with pytest.raises(KeyError, match="lon|longitude"):
+        load_grid(str(path))
+
+
+def test_read_global_attrs_returns_str_dict(tmp_path):
+    """Global attributes are returned as ``str`` regardless of their original type."""
+    path = tmp_path / "with_attrs.nc"
+    with Dataset(path, "w", format="NETCDF4") as ds:
+        ds.title = "synthetic test"
+        ds.version = 1                  # int
+        ds.pi = 3.14                    # float
+        ds.history = "created in a test"
+    attrs = read_global_attrs(str(path))
+    assert attrs["title"] == "synthetic test"
+    assert attrs["history"] == "created in a test"
+    # Non-strings are coerced via str().
+    assert attrs["version"] == "1"
+    assert attrs["pi"] == "3.14"
+    # All values are strings.
+    for v in attrs.values():
+        assert isinstance(v, str)
+
+
+def test_describe_prints_dimensions_and_variables(test_nc, capsys):
+    """``describe`` should print every dim and var so users can adapt the loader."""
+    describe(test_nc)
+    out = capsys.readouterr().out
+    assert "Dimensions:" in out
+    assert "Variables:" in out
+    # Some specific names from the synthetic fixture must appear.
+    assert "lon" in out
+    assert "tas" in out

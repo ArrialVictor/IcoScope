@@ -78,3 +78,27 @@ def test_goldberg_zoom_preserves_topology():
     zoomed = goldberg(8, zoom_factor=3.0, zoom_lon=2.0, zoom_lat=48.0)
     assert len(plain.cells) == len(zoomed.cells)
     assert sum(len(c) == 5 for c in zoomed.cells) == 12
+
+
+def test_factor_below_one_pushes_near_focal_points_away():
+    """factor<1 anti-zoom: a point near the focal point moves outward (away
+    in angular distance) — the focal point is still fixed but its neighborhood
+    expands.
+
+    Tests :func:`schmidt_stretch` directly, separately from the goldberg path.
+    """
+    lon, lat = 0.0, 0.0
+    focal = _focal_xyz(lon, lat)
+    # A point 5° away from the focal point along the lon axis.
+    near = _focal_xyz(5.0, 0.0)
+    out = schmidt_stretch(np.vstack([focal, near]), factor=0.5,
+                          lon_deg=lon, lat_deg=lat)
+    # Focal stays put.
+    assert np.allclose(out[0], focal, atol=1e-12)
+    # The near point moves *further* from the focal point under anti-zoom.
+    before_dist = np.arccos(np.clip(focal @ near, -1.0, 1.0))
+    after_dist = np.arccos(np.clip(focal @ out[1], -1.0, 1.0))
+    assert after_dist > before_dist, (
+        f"factor=0.5 should push near-focal points outward "
+        f"(before {before_dist}, after {after_dist})"
+    )

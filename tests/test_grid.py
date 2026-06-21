@@ -46,10 +46,9 @@ def test_relaxation_reduces_size_spread():
 def test_relaxation_pins_icosahedron_vertices():
     """The 12 original icosahedron vertices must not move during relaxation."""
     iv, ifc = icosahedron()
-    sv, _ = subdivide(iv, ifc, 8)
+    sv, sf = subdivide(iv, ifc, 8)
     before = sv[:12].copy()
-    after, _ = relax_mesh(sv, _ if False else subdivide(iv, ifc, 8)[1],
-                          max_iterations=50)
+    after, _ = relax_mesh(sv, sf, max_iterations=50)
     assert np.allclose(before, after[:12], atol=1e-12)
 
 
@@ -57,6 +56,14 @@ def test_relaxation_converges_early():
     """Early-stop should fire before the cap at small n."""
     g = goldberg(6, relax=True, max_iterations=500, tol=1e-4)
     assert 0 < g.iters < 500
+
+
+def test_relax_mesh_hits_iteration_cap():
+    """With tol=0 (impossible to converge) relaxation must hit max_iterations."""
+    iv, ifc = icosahedron()
+    sv, sf = subdivide(iv, ifc, 4)
+    _, iters = relax_mesh(sv, sf, max_iterations=3, tol=0.0)
+    assert iters == 3
 
 
 def test_no_relax_returns_iters_zero():
