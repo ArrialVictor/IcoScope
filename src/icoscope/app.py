@@ -1159,6 +1159,16 @@ def run(verts, cells, centers, initial_n=8, relax=True, file_path=None,
             "centers": np.asarray(centers),
         }
         w.panel.tabs.setCurrentIndex(1)
+    elif initial_grid == "ico" and not file_path:
+        # Seed the ico cache with the mesh the CLI already built so the
+        # first File/LonLat → Ico tab switch hits the cache and doesn't
+        # incur a fresh goldberg() regen.
+        w._ico_cache = {
+            "params": w._ico_params_key(),
+            "verts": verts,
+            "cells": cells,
+            "centers": np.asarray(centers),
+        }
     if file_path:
         # Load the file's mesh + fields as if the user had clicked Open in
         # the File tab. _on_open_file's logic is reused via the cache path.
