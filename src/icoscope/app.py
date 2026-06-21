@@ -2,15 +2,13 @@
 import os
 import sys
 from dataclasses import dataclass, field
-from datetime import datetime
 
 import numpy as np
 import pyvista as pv
 from pyvistaqt import QtInteractor
-from qtpy.QtCore import QEvent, Qt, QTimer
+from qtpy.QtCore import Qt, QTimer
 from qtpy.QtGui import QIcon, QKeySequence, QShortcut
 from qtpy.QtWidgets import (
-    QAction,
     QApplication,
     QDoubleSpinBox,
     QFileDialog,
@@ -21,11 +19,15 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
+from . import export as _export
+from . import menubar as _menubar
 from .coastlines import coastline_polydata
 from .controls import ControlPanel
 from .graticule import graticule_polydata
 from .grid import goldberg
 from .lonlat import latlon_mesh
+from .picker import Picker
+from .playback import Playback
 from .tabs import Tab
 from .themes import CMAPS, THEMES
 
@@ -135,7 +137,8 @@ class MainWindow(QMainWindow):
         h.addWidget(self.panel)
         self.setCentralWidget(central)
 
-        self._build_menubar()
+        self._theme_actions = _menubar.build_menubar(
+            self, self.theme_name, self._on_theme)
         self._build_lonlat_widget()
         self.statusBar().showMessage("ready")
 
@@ -207,14 +210,16 @@ class MainWindow(QMainWindow):
         # build scene + interactions
         self._refresh_scalars()
         self._mesh = self._to_polydata()
-        self._cell_locator = None
+
+        # Helpers — instantiate after _mesh exists; the picker reads it lazily.
+        self.picker = Picker(self, self.plotter)
+        self.playback = Playback(self, self.plotter)
+
         self._build_scene()
         self.plotter.reset_camera()
-        self._attach_picker()
-        self._attach_trackpad_rotate()
+        self.picker.attach()
         self._apply_stylesheet()
         QShortcut(QKeySequence("Escape"), self, activated=self._on_escape)
-        self._attach_spin_timer()
         self._update_status()
 
     # ── per-tab state plumbing ─────────────────────
@@ -339,11 +344,11 @@ class MainWindow(QMainWindow):
 
     # ── ESC: clear current selection + stop spin ──
     def _on_escape(self):
-        self._clear_highlight()
+        self.picker.clear_highlight()
         self._clear_lonlat()
         if self.state.spin_on:
             self.state.spin_on = False
-            self._spin_timer.stop()
+            self.playback.stop_spin()
             # Uncheck on whichever tab's spin checkbox is currently checked.
             for tab in (self.panel.ico_tab, self.panel.lonlat_tab, self.panel.file_tab):
                 cb = tab.display.spin_cb
@@ -378,161 +383,6 @@ class MainWindow(QMainWindow):
             border-top: 1px solid #888;
         }
         """)
-
-    # ── highlight picked cell ─────────────────────
-    def _highlight_cell(self, idx):
-        cell = list(self.cells[idx])
-        pts = np.asarray(self.verts)[cell]
-        pts = pts / np.linalg.norm(pts, axis=1, keepdims=True) * 1.003
-        n = len(cell)
-        ids = list(range(n)) + [0]   # close the loop
-        lines = np.array([len(ids)] + ids, dtype=np.int64)
-        poly = pv.PolyData(pts, lines=lines)
-        self.plotter.add_mesh(poly, name="highlight", color="#ff2d8a",
-                              line_width=3.5, render_lines_as_tubes=False,
-                              pickable=False, reset_camera=False)
-
-    def _clear_highlight(self):
-        self.plotter.remove_actor("highlight", reset_camera=False, render=False)
-        if hasattr(self, "lon_box"):
-            self._clear_lonlat()
-
-    # ── picker (click → cell info) ────────────────
-    def _attach_picker(self):
-        """Left-click → analytic ray-sphere intersection → vtkCellLocator.
-
-        Bypasses vtkCellPicker entirely (which gets flaky at the silhouette
-        and especially at the poles where graticule meridians converge).
-        We cast a ray from the camera through the click pixel, intersect it
-        analytically with the unit sphere (front hit), then ask a
-        vtkCellLocator which polydata cell contains that point.
-        """
-        import vtk
-        iren = getattr(self.plotter.iren, "interactor", self.plotter.iren)
-        self._cell_locator = None
-
-        def ensure_locator():
-            if self._cell_locator is None:
-                loc = vtk.vtkCellLocator()
-                loc.SetDataSet(self._mesh)
-                loc.BuildLocator()
-                self._cell_locator = loc
-            return self._cell_locator
-
-        def on_pick(point, *args, **kwargs):
-            # Empty-sphere state — no cells to pick, and SetDataSet(None) on
-            # the locator triggers a "No cells to subdivide" VTK error.
-            if self._mesh is None:
-                return
-            x, y = iren.GetEventPosition()
-            ren = self.plotter.renderer
-            cam = ren.GetActiveCamera()
-            cam_pos = np.array(cam.GetPosition(), dtype=float)
-
-            # screen pixel → world ray direction
-            ren.SetDisplayPoint(float(x), float(y), 0.0)
-            ren.DisplayToWorld()
-            p_world = np.array(ren.GetWorldPoint(), dtype=float)
-            if p_world[3] != 0:
-                p_world = p_world[:3] / p_world[3]
-            else:
-                p_world = p_world[:3]
-            ray = p_world - cam_pos
-            n = np.linalg.norm(ray)
-            if n == 0:
-                return
-            ray /= n
-
-            # intersect with unit sphere: |cam + t*ray|^2 = 1
-            b = float(np.dot(cam_pos, ray))
-            c = float(np.dot(cam_pos, cam_pos)) - 1.0
-            disc = b * b - c
-            if disc < 0:
-                return                 # ray misses sphere
-            t = -b - np.sqrt(disc)     # closer (front) intersection
-            if t <= 0:
-                return                 # behind camera
-            hit = cam_pos + t * ray
-
-            # find the cell containing this surface point
-            loc = ensure_locator()
-            closest = [0.0, 0.0, 0.0]
-            cell_id = vtk.reference(0)
-            sub_id = vtk.reference(0)
-            dist2 = vtk.reference(0.0)
-            gcell = vtk.vtkGenericCell()
-            loc.FindClosestPoint(list(hit), closest, gcell, cell_id, sub_id, dist2)
-            idx = int(cell_id)
-            if idx < 0 or idx >= len(self.cells):
-                return
-
-            self._highlight_cell(idx)
-            hit /= np.linalg.norm(hit) or 1.0
-            lat = float(np.degrees(np.arcsin(np.clip(hit[2], -1, 1))))
-            lon = float(np.degrees(np.arctan2(hit[1], hit[0])))
-            self._set_lonlat(lon, lat)
-            self.plotter.render()
-
-        self.plotter.enable_point_picking(
-            callback=on_pick, left_clicking=True,
-            show_message=False, show_point=False, pickable_window=False,
-        )
-
-    # ── trackpad rotate gesture (macOS two-finger rotate) ──
-    def _attach_trackpad_rotate(self):
-        """Map a trackpad pinch gesture's rotation component to a camera roll.
-
-        Rotation isn't its own Qt gesture type — it's part of QPinchGesture,
-        which exposes scaleFactor() and rotationAngle().
-        """
-        iren_widget = self.plotter.interactor
-        iren_widget.grabGesture(Qt.GestureType.PinchGesture)
-        iren_widget.installEventFilter(self)
-
-    def eventFilter(self, obj, event):
-        """Translate trackpad pinch gestures into camera roll / dolly / pan."""
-        if event.type() == QEvent.Type.Gesture:
-            g = event.gesture(Qt.GestureType.PinchGesture)
-            if g is not None:
-                cf = g.changeFlags()
-                vc = self.plotter.renderer.GetActiveCamera()
-                need_render = False
-                # rotation → roll the camera around its view axis
-                if cf & g.ChangeFlag.RotationAngleChanged:
-                    delta = g.rotationAngle() - g.lastRotationAngle()
-                    if abs(delta) > 0:
-                        vc.Roll(-delta)
-                        need_render = True
-                # pinch → dolly the camera along its view axis
-                if cf & g.ChangeFlag.ScaleFactorChanged:
-                    s = g.scaleFactor()  # per-step multiplicative delta
-                    if s > 0 and s != 1.0:
-                        vc.Dolly(s)
-                        self.plotter.renderer.ResetCameraClippingRange()
-                        need_render = True
-                if need_render:
-                    self.plotter.render()
-                return True
-        return super().eventFilter(obj, event)
-
-    # ── auto-rotate ───────────────────────────────
-    def _attach_spin_timer(self):
-        self._spin_timer = QTimer(self)
-        self._spin_timer.setInterval(33)
-        self._spin_timer.timeout.connect(self._spin_tick)
-
-    def _spin_tick(self):
-        vc = self.plotter.renderer.GetActiveCamera()
-        fp = np.array(vc.GetFocalPoint(), dtype=float)
-        up = np.array(vc.GetViewUp(), dtype=float)
-        up /= np.linalg.norm(up) or 1.0
-        rel = np.array(vc.GetPosition(), dtype=float) - fp
-        a = np.radians(0.4)
-        ca, sa = np.cos(a), np.sin(a)
-        new_rel = rel * ca + np.cross(up, rel) * sa + up * (up @ rel) * (1 - ca)
-        new_pos = fp + new_rel
-        vc.SetPosition(float(new_pos[0]), float(new_pos[1]), float(new_pos[2]))
-        self.plotter.render()
 
     # ── status bar ────────────────────────────────
     def _update_status(self):
@@ -615,89 +465,12 @@ class MainWindow(QMainWindow):
         cam.up = (0.0, 0.0, 1.0)
         self.plotter.render()
 
-    # ── menubar ────────────────────────────────────
-    def _build_menubar(self):
-        mb = self.menuBar()
-
-        # View → Theme → Dark / Light / CB-safe. Theme is window-level
-        # (affects plotter background and default overlay colours), not a
-        # per-tab setting, so it lives in the menu bar.
-        view_menu = mb.addMenu("&View")
-        theme_menu = view_menu.addMenu("Theme")
-        self._theme_actions: dict[str, QAction] = {}
-        for name in THEMES:
-            act = QAction(name, self, checkable=True)
-            act.setChecked(name == self.theme_name)
-            act.triggered.connect(lambda _checked, n=name: self._on_theme(n))
-            theme_menu.addAction(act)
-            self._theme_actions[name] = act
-
-        help_menu = mb.addMenu("&Help")
-
-        keys_act = QAction("Keyboard && mouse", self)
-        keys_act.triggered.connect(self._show_shortcuts)
-        help_menu.addAction(keys_act)
-
-        netcdf_act = QAction("NetCDF help", self)
-        netcdf_act.triggered.connect(self._show_netcdf_help)
-        help_menu.addAction(netcdf_act)
-
-        help_menu.addSeparator()
-        about_act = QAction("About IcoScope", self)
-        about_act.triggered.connect(self._show_about)
-        help_menu.addAction(about_act)
-
-    def _show_shortcuts(self):
-        QMessageBox.information(
-            self, "Keyboard & mouse",
-            "<b>Mouse</b><br>"
-            "Left drag — rotate<br>"
-            "Right drag / scroll — zoom<br>"
-            "Shift + drag — pan<br>"
-            "Left click — pick a cell<br>"
-            "<br><b>Keys</b><br>"
-            "Esc — clear selection, stop auto-rotate<br>"
-            "r — reset camera<br>"
-            "f — focus on cursor<br>"
-            "w / s — wireframe / surface<br>"
-            "q — quit<br>"
-            "<br><b>lon / lat fields</b><br>"
-            "Type values + Enter to fly the camera there."
-        )
-
-    def _show_netcdf_help(self):
-        QMessageBox.information(
-            self, "NetCDF help",
-            "<b>Expected schema (CF convention):</b><br>"
-            "<code>lon(cell)</code>, <code>lat(cell)</code><br>"
-            "<code>bounds_lon(cell, nvertex)</code>, "
-            "<code>bounds_lat(cell, nvertex)</code><br>"
-            "<code>&lt;field&gt;(cell)</code> or "
-            "<code>&lt;field&gt;(time, cell)</code><br><br>"
-            "Common variable-name variants are auto-detected "
-            "(<code>lon</code>/<code>longitude</code>/<code>clon</code>, etc.). "
-            "Pentagons should pad the last <code>nvertex</code> slot with a "
-            "repeated vertex.<br><br>"
-            "If your file fails to load, run "
-            "<code>icoscope --file &lt;path&gt; --describe</code> to inspect "
-            "the schema."
-        )
-
-    def _show_about(self):
-        QMessageBox.about(
-            self, "IcoScope",
-            "<b>IcoScope</b><br>"
-            "Interactive 3D viewer for icosahedral hex/pent grids on a sphere.<br><br>"
-            "Renders DYNAMICO/ICOLMDZ NetCDF output or synthetic Goldberg grids.<br>"
-            "Built with PyVista + Qt."
-        )
-
     # ── slots ─────────────────────────────────────
     def _on_theme(self, name):
         self.theme_name = name
         # Keep the menu's checkmark in sync (mutually-exclusive).
-        for n, act in getattr(self, "_theme_actions", {}).items():
-            act.setChecked(n == name)
+        _menubar.sync_theme_checkmarks(
+            getattr(self, "_theme_actions", {}), name)
         suggested = THEMES[name]["cmap"]
         # Push the suggested cmap onto every tab whose cmap matched a known
         # theme default (otherwise the user has explicitly chosen, leave it).
@@ -805,7 +578,7 @@ class MainWindow(QMainWindow):
             self._file_state.time_index = 0
         self._refresh_scalars()
         self._mesh = self._to_polydata()
-        self._cell_locator = None
+        self.picker.invalidate_locator()
         self._build_scene()
 
     def _on_colorbar(self, on):
@@ -844,8 +617,8 @@ class MainWindow(QMainWindow):
         """Refresh derived state after ``self.verts/cells/centers`` change."""
         self._refresh_scalars()
         self._mesh = self._to_polydata()
-        self._cell_locator = None
-        self._clear_highlight()
+        self.picker.invalidate_locator()
+        self.picker.clear_highlight()
         self._build_scene()
         self._update_status()
 
@@ -1143,9 +916,9 @@ class MainWindow(QMainWindow):
         # Auto-rotate is per-tab state but the timer is window-level — sync
         # the timer to the new active tab's spin_on flag.
         if self.state.spin_on:
-            self._spin_timer.start()
+            self.playback.start_spin()
         else:
-            self._spin_timer.stop()
+            self.playback.stop_spin()
         self._update_status()
 
     def _render_empty_sphere(self):
@@ -1167,8 +940,8 @@ class MainWindow(QMainWindow):
                               smooth_shading=True, reset_camera=False)
         self._mesh = None
         self.scalars = None
-        self._cell_locator = None
-        self._clear_highlight()
+        self.picker.invalidate_locator()
+        self.picker.clear_highlight()
         self.plotter.render()
         self._update_status()
 
@@ -1181,103 +954,28 @@ class MainWindow(QMainWindow):
             self.panel.file_tab.set_time_label(idx, meta["shape"][0])
         self._refresh_scalars()
         self._mesh = self._to_polydata()
-        self._cell_locator = None
+        self.picker.invalidate_locator()
         self._build_scene()
 
     def _on_play_toggled(self, on):
-        if on:
-            if not hasattr(self, "_play_timer"):
-                self._play_timer = QTimer(self)
-                self._play_timer.setInterval(self.panel.file_tab.display.speed_box.value())
-                self._play_timer.timeout.connect(self._play_step)
-            self._play_timer.start()
-        else:
-            if hasattr(self, "_play_timer"):
-                self._play_timer.stop()
+        self.playback.toggle_play(on)
 
     def _on_play_speed_changed(self, ms):
-        if hasattr(self, "_play_timer"):
-            self._play_timer.setInterval(ms)
-
-    def _play_step(self):
-        meta = self._file_state.file_fields.get(self._file_state.color_by)
-        if not meta or not meta.get("time_varying"):
-            self._play_timer.stop()
-            self.panel.file_tab.display.play_btn.setChecked(False)
-            return
-        n = meta["shape"][0]
-        new_idx = (self._file_state.time_index + 1) % n
-        # Triggers _on_time_changed via the tab's time_changed signal.
-        self.panel.file_tab.display.time_slider.setValue(new_idx)
+        self.playback.set_speed(ms)
 
     def _on_spin(self, on):
         if on:
-            self._spin_timer.start()
+            self.playback.start_spin()
         else:
-            self._spin_timer.stop()
+            self.playback.stop_spin()
         self.state.spin_on = on
 
     def _on_screenshot(self):
-        from .export_dialog import PngExportDialog
-        default = f"icoscope_{datetime.now():%Y%m%d_%H%M%S}.png"
-        dlg = PngExportDialog(self, default_filename=default,
-                              default_transparent=self.transparent_export)
-        if dlg.exec() != dlg.DialogCode.Accepted:
-            return
-        path, scale, transparent = dlg.result()
-        self.transparent_export = transparent  # remember for next time
-        if path:
-            # PyVista's `scale=N` screenshot internally resizes the live render
-            # window to N× the current size, draws into it, and resizes back.
-            # Without intervention the user sees a brief flicker. We:
-            #   1. freeze Qt updates on the interactor widget (no paint events
-            #      reach the user during the screenshot),
-            #   2. snapshot the camera state and restore it afterwards in case
-            #      the scaled render perturbs anything,
-            #   3. re-enable updates and force one clean render.
-            vc = self.plotter.renderer.GetActiveCamera()
-            saved = (tuple(vc.GetPosition()),
-                     tuple(vc.GetFocalPoint()),
-                     tuple(vc.GetViewUp()),
-                     vc.GetViewAngle(),
-                     vc.GetParallelScale())
-            iren_widget = self.plotter.interactor
-            iren_widget.setUpdatesEnabled(False)
-            try:
-                self.plotter.screenshot(path, transparent_background=transparent,
-                                        scale=scale)
-            finally:
-                vc.SetPosition(*saved[0])
-                vc.SetFocalPoint(*saved[1])
-                vc.SetViewUp(*saved[2])
-                vc.SetViewAngle(saved[3])
-                vc.SetParallelScale(saved[4])
-                iren_widget.setUpdatesEnabled(True)
-                self.plotter.render()
-            self.statusBar().showMessage(
-                f"saved → {path} ({scale}× resolution)", 5000)
+        self.transparent_export = _export.save_screenshot(
+            self, self.plotter, transparent=self.transparent_export)
 
     def _on_vector_export(self):
-        default = f"icoscope_{datetime.now():%Y%m%d_%H%M%S}.svg"
-        path, _ = QFileDialog.getSaveFileName(
-            self, "Save SVG", default, "SVG (*.svg)"
-        )
-        if not path:
-            return
-        try:
-            import vtk
-            ex = vtk.vtkGL2PSExporter()
-            prefix = os.path.splitext(path)[0]
-            ex.SetFilePrefix(prefix)
-            ex.SetFileFormatToSVG()
-            ex.CompressOff()
-            ex.SetSortToBSP()
-            ex.SetRenderWindow(self.plotter.render_window)
-            ex.Write()
-            self.statusBar().showMessage(f"saved → {prefix}.svg", 5000)
-        except Exception as e:
-            QMessageBox.critical(self, "Vector export failed",
-                                 f"{e}\n\nThis needs a VTK build with GL2PS support.")
+        _export.save_vector(self, self.plotter)
 
 
 def run(
