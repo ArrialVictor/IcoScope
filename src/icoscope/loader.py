@@ -32,6 +32,10 @@ EXCLUDED = set(CENTER_LON_NAMES + CENTER_LAT_NAMES
                + BOUNDS_LON_NAMES + BOUNDS_LAT_NAMES
                + ("time", "nvertex", "cell"))
 
+# LMDZ dyn3d (classical regular lat-lon) signature. A file is treated as dyn3d
+# when ALL four of these 1-D coord arrays are present.
+DYN3D_COORDS = ("rlonu", "rlatu", "rlonv", "rlatv")
+
 
 def _find(ds, candidates: tuple[str, ...]) -> str:
     for name in candidates:
@@ -70,6 +74,8 @@ def load_grid(
     from netCDF4 import Dataset
 
     with Dataset(path) as ds:
+        if all(name in ds.variables for name in DYN3D_COORDS):
+            return _load_dyn3d_grid(ds)
         center_lon_name = _find(ds, CENTER_LON_NAMES)
         clon = np.asarray(ds.variables[center_lon_name][:])
         clat = np.asarray(ds.variables[_find(ds, CENTER_LAT_NAMES)][:])
@@ -115,6 +121,28 @@ def load_grid(
             cell.pop()
         cells.append(cell)
 
+    return verts, cells, centers, fields
+
+
+def _load_dyn3d_grid(
+    ds,
+) -> tuple[np.ndarray, list[list[int]], np.ndarray, dict[str, FieldMeta]]:
+    """Build mesh from an LMDZ dyn3d NetCDF (regular lat-lon Arakawa C-grid).
+
+    Reads the four ``rlonu/rlonv/rlatu/rlatv`` coord arrays and reconstructs
+    cell polygons via :func:`icoscope.lonlat._build_mesh_from_arrays`. Field
+    reading is deferred to a follow-up PR — the returned ``fields`` dict is
+    empty for now, so a dyn3d file loads with the mesh but no "Color by"
+    options beyond the synthetic ones.
+    """
+    from .lonlat import _build_mesh_from_arrays
+
+    rlonu = np.asarray(ds.variables["rlonu"][:], dtype=float)
+    rlonv = np.asarray(ds.variables["rlonv"][:], dtype=float)
+    rlatu = np.asarray(ds.variables["rlatu"][:], dtype=float)
+    rlatv = np.asarray(ds.variables["rlatv"][:], dtype=float)
+    verts, cells, centers = _build_mesh_from_arrays(rlonu, rlonv, rlatu, rlatv)
+    fields: dict[str, FieldMeta] = {}
     return verts, cells, centers, fields
 
 

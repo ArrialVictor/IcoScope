@@ -25,6 +25,7 @@ from .coastlines import coastline_polydata
 from .controls import ControlPanel
 from .graticule import graticule_polydata
 from .grid import goldberg
+from .lonlat import latlon_mesh
 from .tabs import SYNTHETIC_COLOR_BY
 from .themes import CMAPS, THEMES
 
@@ -61,7 +62,8 @@ class MainWindow(QMainWindow):
     """Top-level IcoScope window: 3D sphere view + right-side control panel."""
 
     def __init__(self, verts, cells, centers, initial_n=8, relax=True,
-                 zoom_factor=1.0, zoom_lon=0.0, zoom_lat=45.0):
+                 zoom_factor=1.0, zoom_lon=0.0, zoom_lat=45.0,
+                 iim=96, jjm=95):
         super().__init__()
         self.setWindowTitle("IcoScope")
         icon_path = os.path.join(os.path.dirname(__file__), "icon.png")
@@ -80,6 +82,9 @@ class MainWindow(QMainWindow):
         self.zoom_factor = float(zoom_factor)
         self.zoom_lon = float(zoom_lon)
         self.zoom_lat = float(zoom_lat)
+        # LonLat-tab synthetic mesh size (LMDZ low-res defaults).
+        self.iim = int(iim)
+        self.jjm = int(jjm)
         self.transparent_export = False
 
         # Theme is window-level (background colour + default overlay tints).
@@ -115,12 +120,20 @@ class MainWindow(QMainWindow):
         ico.relax_iters_box.setValue(self.max_relax_iters)
         ico.relax_iters_box.blockSignals(False)
         ico.set_zoom(self.zoom_factor, self.zoom_lon, self.zoom_lat)
-        for tab in (self.panel.ico_tab, self.panel.file_tab):
+        lonlat = self.panel.lonlat_tab
+        lonlat.iim_box.blockSignals(True)
+        lonlat.iim_box.setValue(self.iim)
+        lonlat.iim_box.blockSignals(False)
+        lonlat.jjm_box.blockSignals(True)
+        lonlat.jjm_box.setValue(self.jjm)
+        lonlat.jjm_box.blockSignals(False)
+        display_tabs = (self.panel.ico_tab, self.panel.lonlat_tab, self.panel.file_tab)
+        for tab in display_tabs:
             tab.set_cmap(default_cmap)
         self._sync_color_buttons()
 
         # wire signals — display controls live on each tab independently
-        for tab in (self.panel.ico_tab, self.panel.file_tab):
+        for tab in display_tabs:
             tab.cmap_changed.connect(self._on_cmap)
             tab.coastlines_toggled.connect(self._on_coast)
             tab.graticule_toggled.connect(self._on_grat)
@@ -142,6 +155,8 @@ class MainWindow(QMainWindow):
         self.panel.ico_tab.n_changed.connect(self._on_n)
         self.panel.ico_tab.relax_iters_changed.connect(self._on_relax_iters)
         self.panel.ico_tab.zoom_changed.connect(self._on_zoom)
+        self.panel.lonlat_tab.iim_changed.connect(self._on_iim)
+        self.panel.lonlat_tab.jjm_changed.connect(self._on_jjm)
         self.panel.file_tab.open_file_clicked.connect(self._on_open_file)
         self.panel.file_tab.close_file_clicked.connect(self._on_close_file)
         self.panel.file_tab.time_changed.connect(self._on_time_changed)
@@ -152,6 +167,7 @@ class MainWindow(QMainWindow):
         # Cached meshes so tab-switching doesn't trigger expensive recomputes.
         self._file_cache: dict | None = None
         self._ico_cache: dict | None = None
+        self._lonlat_cache: dict | None = None
 
         # build scene + interactions
         self._refresh_scalars()
@@ -202,7 +218,7 @@ class MainWindow(QMainWindow):
         hex_edge = self._color_to_hex(self._edge_color())
         hex_coast = self._color_to_hex(self._coast_color())
         hex_grat = self._color_to_hex(self._grat_color())
-        for tab in (self.panel.ico_tab, self.panel.file_tab):
+        for tab in (self.panel.ico_tab, self.panel.lonlat_tab, self.panel.file_tab):
             tab.set_edge_color(hex_edge)
             tab.set_coast_color(hex_coast)
             tab.set_grat_color(hex_grat)
@@ -294,7 +310,7 @@ class MainWindow(QMainWindow):
             self.state.spin_on = False
             self._spin_timer.stop()
             # Uncheck on whichever tab's spin checkbox is currently checked.
-            for tab in (self.panel.ico_tab, self.panel.file_tab):
+            for tab in (self.panel.ico_tab, self.panel.lonlat_tab, self.panel.file_tab):
                 cb = tab.display.spin_cb
                 if cb.isChecked():
                     cb.blockSignals(True)
@@ -369,6 +385,10 @@ class MainWindow(QMainWindow):
             return self._cell_locator
 
         def on_pick(point, *args, **kwargs):
+            # Empty-sphere state — no cells to pick, and SetDataSet(None) on
+            # the locator triggers a "No cells to subdivide" VTK error.
+            if self._mesh is None:
+                return
             x, y = iren.GetEventPosition()
             ren = self.plotter.renderer
             cam = ren.GetActiveCamera()
@@ -640,7 +660,7 @@ class MainWindow(QMainWindow):
         for tab_state, tab_widget in (
             (self._ico_state, self.panel.ico_tab),
             (self._file_state, self.panel.file_tab),
-            (self._lonlat_state, None),
+            (self._lonlat_state, self.panel.lonlat_tab),
         ):
             tab_state.cmap = suggested
             if tab_widget is not None:
@@ -831,6 +851,47 @@ class MainWindow(QMainWindow):
     def _on_ico_tab(self) -> bool:
         return self.panel.tabs.currentIndex() == 0
 
+    def _on_lonlat_tab(self) -> bool:
+        return self.panel.tabs.currentIndex() == 1
+
+    def _lonlat_params_key(self) -> tuple:
+        """Cache key identifying the current LonLat-tab mesh parameters."""
+        return (self.iim, self.jjm)
+
+    def _regen_lonlat(self):
+        """Build (or reuse) the synthetic LonLat mesh and render it."""
+        key = self._lonlat_params_key()
+        cached = self._lonlat_cache
+        if cached is not None and cached["params"] == key:
+            self.verts = cached["verts"]
+            self.cells = cached["cells"]
+            self.centers = cached["centers"]
+        else:
+            v, c, ctr = latlon_mesh(iim=self.iim, jjm=self.jjm)
+            self.verts, self.cells, self.centers = v, c, np.asarray(ctr)
+            self._lonlat_cache = {
+                "params": key,
+                "verts": self.verts,
+                "cells": self.cells,
+                "centers": self.centers,
+            }
+        self._refresh_scalars()
+        self._mesh = self._to_polydata()
+        self._cell_locator = None
+        self._clear_highlight()
+        self._build_scene()
+        self._update_status()
+
+    def _on_iim(self, val):
+        self.iim = int(val)
+        if self._on_lonlat_tab():
+            self._regen_lonlat()
+
+    def _on_jjm(self, val):
+        self.jjm = int(val)
+        if self._on_lonlat_tab():
+            self._regen_lonlat()
+
     def _on_open_file(self):
         path, _ = QFileDialog.getOpenFileName(
             self, "Open NetCDF", "", "NetCDF (*.nc *.nc4 *.cdf);;All files (*)"
@@ -880,7 +941,7 @@ class MainWindow(QMainWindow):
         )
 
     def _on_close_file(self):
-        """Drop the loaded file and return to the synthetic grid."""
+        """Drop the loaded file. Stays on the File tab — shows the empty sphere."""
         if not self.file_path:
             return
         self.file_path = None
@@ -892,8 +953,9 @@ class MainWindow(QMainWindow):
         self.panel.file_tab.set_time_steps(0)
         self.panel.file_tab.set_file_loaded(False)
         self.panel.file_tab.set_file_info()
-        # Switching to the Ico tab triggers _on_tab_changed → _regen_synthetic.
-        self.panel.tabs.setCurrentIndex(0)
+        # File tab stays active; render the empty sphere. The spin timer
+        # is unaffected — _spin_tick rotates the camera, not the mesh.
+        self._render_empty_sphere()
 
     def _activate_file_view(self):
         """Render the cached file mesh (must be called only when _file_cache is set)."""
@@ -919,6 +981,8 @@ class MainWindow(QMainWindow):
         """Tab is the active mesh source — swap the rendered scene accordingly."""
         if idx == 0:           # Ico
             self._regen_synthetic()
+        elif idx == 1:         # LonLat
+            self._regen_lonlat()
         elif idx == 2:         # File
             if self._file_cache is not None:
                 self._activate_file_view()
@@ -928,10 +992,14 @@ class MainWindow(QMainWindow):
                 # settings are ignored in this state since there's no
                 # geographic data to overlay onto.
                 self._render_empty_sphere()
-        else:                  # LonLat placeholder
-            self._render_empty_sphere()
         # Per-tab colour overrides may differ → refresh swatches.
         self._sync_color_buttons()
+        # Auto-rotate is per-tab state but the timer is window-level — sync
+        # the timer to the new active tab's spin_on flag.
+        if self.state.spin_on:
+            self._spin_timer.start()
+        else:
+            self._spin_timer.stop()
 
     def _render_empty_sphere(self):
         """Render a plain blank sphere (no cells, no overlays).
@@ -1066,7 +1134,8 @@ class MainWindow(QMainWindow):
 
 
 def run(verts, cells, centers, initial_n=8, relax=True, file_path=None,
-        zoom_factor=1.0, zoom_lon=0.0, zoom_lat=45.0):
+        zoom_factor=1.0, zoom_lon=0.0, zoom_lat=45.0,
+        initial_grid="ico", iim=96, jjm=95):
     """Create the QApplication, show the main window, and start the Qt event loop."""
     app = QApplication.instance() or QApplication(sys.argv)
     # Set the icon on the QApplication BEFORE any window appears — that's the
@@ -1078,7 +1147,18 @@ def run(verts, cells, centers, initial_n=8, relax=True, file_path=None,
     app.setApplicationName("IcoScope")
     app.setApplicationDisplayName("IcoScope")
     w = MainWindow(verts, cells, centers, initial_n=initial_n, relax=relax,
-                   zoom_factor=zoom_factor, zoom_lon=zoom_lon, zoom_lat=zoom_lat)
+                   zoom_factor=zoom_factor, zoom_lon=zoom_lon, zoom_lat=zoom_lat,
+                   iim=iim, jjm=jjm)
+    if initial_grid == "lonlat" and not file_path:
+        # Seed the lonlat cache with the mesh the CLI already built, then
+        # switch tabs (which triggers _regen_lonlat → cache hit → render).
+        w._lonlat_cache = {
+            "params": (w.iim, w.jjm),
+            "verts": verts,
+            "cells": cells,
+            "centers": np.asarray(centers),
+        }
+        w.panel.tabs.setCurrentIndex(1)
     if file_path:
         # Load the file's mesh + fields as if the user had clicked Open in
         # the File tab. _on_open_file's logic is reused via the cache path.

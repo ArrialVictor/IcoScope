@@ -68,11 +68,19 @@ pip uninstall icoscope
 ## Use
 
 ```bash
-icoscope                               # open the viewer with a synthetic grid
-icoscope -n 60                         # finer synthetic grid
-icoscope --file output.nc              # load a DYNAMICO/ICOLMDZ NetCDF
-icoscope --file output.nc --describe   # print the file's schema, no GUI
+icoscope                                 # open the viewer with a synthetic icosahedral grid
+icoscope -n 60                           # finer synthetic grid
+icoscope --grid lonlat                   # synthetic LMDZ dyn3d-style regular lat-lon mesh
+icoscope --grid lonlat --iim 144 --jjm 143  # finer lat-lon mesh
+icoscope --file output.nc                # load a DYNAMICO/ICOLMDZ or LMDZ dyn3d NetCDF
+icoscope --file output.nc --describe     # print the file's schema, no GUI
 ```
+
+Inside the viewer, three tabs live side-by-side: **Ico** (synthetic Goldberg
+mesh + Schmidt zoom), **LonLat** (synthetic dyn3d-style regular lat-lon mesh),
+and **File** (loaded NetCDF). Each tab is a complete, independent
+visualization — switching tabs swaps the rendered mesh and preserves the
+per-tab display settings.
 
 Once the viewer is open, fields, coastlines, time slider, themes, etc. are all
 controlled from the side panel.
@@ -115,6 +123,12 @@ etc.). Pentagons should pad the last `nvertex` slot with a repeated vertex.
 
 If your file uses a different layout, run `icoscope --file <path> --describe`
 and adapt the auto-detect lists in `src/icoscope/loader.py`.
+
+LMDZ dyn3d files (regular lat-lon Arakawa C-grid) are also auto-detected via
+the presence of the four 1-D coord arrays `rlonu`, `rlatu`, `rlonv`, `rlatv`;
+the loader reconstructs cell polygons from those edges. Field reading on
+the 2-D `(rlatu, rlonv)` layout is deferred to a follow-up — for now only the
+mesh is shown.
 
 ## License
 
