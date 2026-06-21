@@ -83,7 +83,7 @@ class MainWindow(QMainWindow):
         h.setContentsMargins(0, 0, 0, 0)
         self.plotter = QtInteractor(central)
         h.addWidget(self.plotter.interactor, stretch=1)
-        self.panel = ControlPanel(list(THEMES), CMAPS)
+        self.panel = ControlPanel(CMAPS)
         h.addWidget(self.panel)
         self.setCentralWidget(central)
 
@@ -99,7 +99,6 @@ class MainWindow(QMainWindow):
         self.panel.relax_iters_box.setValue(self.max_relax_iters)
         self.panel.relax_iters_box.blockSignals(False)
         self.panel.set_zoom(self.zoom_factor, self.zoom_lon, self.zoom_lat)
-        self.panel.set_theme(self.theme_name)
         self.panel.set_cmap(self.cmap)
         self._sync_color_buttons()
         # color-by initially "None" → disable cmap-related widgets
@@ -108,7 +107,6 @@ class MainWindow(QMainWindow):
         self.panel.cmap_box.setEnabled(False)
 
         # wire signals
-        self.panel.theme_changed.connect(self._on_theme)
         self.panel.cmap_changed.connect(self._on_cmap)
         self.panel.coastlines_toggled.connect(self._on_coast)
         self.panel.graticule_toggled.connect(self._on_grat)
@@ -500,6 +498,19 @@ class MainWindow(QMainWindow):
     def _build_menubar(self):
         mb = self.menuBar()
 
+        # View → Theme → Dark / Light / CB-safe. Theme is window-level
+        # (affects plotter background and default overlay colours), not a
+        # per-tab setting, so it lives in the menu bar.
+        view_menu = mb.addMenu("&View")
+        theme_menu = view_menu.addMenu("Theme")
+        self._theme_actions: dict[str, QAction] = {}
+        for name in THEMES:
+            act = QAction(name, self, checkable=True)
+            act.setChecked(name == self.theme_name)
+            act.triggered.connect(lambda _checked, n=name: self._on_theme(n))
+            theme_menu.addAction(act)
+            self._theme_actions[name] = act
+
         help_menu = mb.addMenu("&Help")
 
         keys_act = QAction("Keyboard && mouse", self)
@@ -563,6 +574,9 @@ class MainWindow(QMainWindow):
     # ── slots ─────────────────────────────────────
     def _on_theme(self, name):
         self.theme_name = name
+        # Keep the menu's checkmark in sync (mutually-exclusive).
+        for n, act in getattr(self, "_theme_actions", {}).items():
+            act.setChecked(n == name)
         suggested = THEMES[name]["cmap"]
         if suggested != self.cmap:
             self.cmap = suggested

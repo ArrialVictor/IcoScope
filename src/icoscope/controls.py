@@ -94,7 +94,6 @@ class ControlPanel(QWidget):
     """
 
     # Coloring
-    theme_changed       = Signal(str)
     cmap_changed        = Signal(str)
     color_by_changed    = Signal(str)
     colorbar_toggled    = Signal(bool)
@@ -134,7 +133,7 @@ class ControlPanel(QWidget):
     screenshot_clicked     = Signal()
     vector_export_clicked  = Signal()
 
-    def __init__(self, themes, cmaps, parent=None):
+    def __init__(self, cmaps, parent=None):
         super().__init__(parent)
         self.setFixedWidth(320)
         outer = QVBoxLayout(self)
@@ -150,7 +149,7 @@ class ControlPanel(QWidget):
         outer.addWidget(self.tabs)
 
         # ── Shared display section ─────────────────
-        outer.addWidget(self._build_coloring_group(themes, cmaps))
+        outer.addWidget(self._build_coloring_group(cmaps))
         outer.addWidget(self._build_overlays_group())
         outer.addWidget(self._build_animation_group())
         outer.addWidget(self._build_export_group())
@@ -282,15 +281,10 @@ class ControlPanel(QWidget):
 
     # ── Shared-section builders ───────────────────────────────────────────
 
-    def _build_coloring_group(self, themes, cmaps) -> QGroupBox:
+    def _build_coloring_group(self, cmaps) -> QGroupBox:
         col = QGroupBox("Coloring")
         cf = QFormLayout(col)
         cf.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
-
-        self.theme_box = _expand(QComboBox())
-        self.theme_box.addItems(themes)
-        self.theme_box.currentTextChanged.connect(self.theme_changed)
-        cf.addRow("Theme", self.theme_box)
 
         self.color_by_box = _expand(QComboBox())
         # initial items; replaced at runtime via set_color_by_items()
@@ -439,12 +433,6 @@ class ControlPanel(QWidget):
         return exp
 
     # ── Public setters (called by app.py) ────────────────────────────────
-
-    def set_theme(self, name):
-        """Select *name* in the theme combo box (no-op if not listed)."""
-        i = self.theme_box.findText(name)
-        if i >= 0:
-            self.theme_box.setCurrentIndex(i)
 
     def set_cmap(self, name):
         """Select *name* in the colormap combo box (no-op if not listed)."""
