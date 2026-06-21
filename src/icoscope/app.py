@@ -840,40 +840,54 @@ class MainWindow(QMainWindow):
         self.state.grat_width = float(w)
         self._build_scene()
 
-    def _ico_params_key(self) -> tuple:
-        """Cache key identifying the current Ico-tab mesh parameters."""
-        return (self.n, self.max_relax_iters,
-                self.zoom_factor, self.zoom_lon, self.zoom_lat)
-
-    def _regen_synthetic(self):
-        key = self._ico_params_key()
-        cached = self._ico_cache
-        if cached is not None and cached["params"] == key:
-            # Reuse cached mesh — typical on Ico ↔ File tab switches when
-            # the user hasn't touched the Ico params.
-            self.verts = cached["verts"]
-            self.cells = cached["cells"]
-            self.centers = cached["centers"]
-        else:
-            relax = self.max_relax_iters > 0
-            v, c, ctr, _ = goldberg(n=self.n, relax=relax,
-                                    max_iterations=self.max_relax_iters,
-                                    zoom_factor=self.zoom_factor,
-                                    zoom_lon=self.zoom_lon,
-                                    zoom_lat=self.zoom_lat)
-            self.verts, self.cells, self.centers = v, c, np.asarray(ctr)
-            self._ico_cache = {
-                "params": key,
-                "verts": self.verts,
-                "cells": self.cells,
-                "centers": self.centers,
-            }
+    def _apply_mesh_change(self) -> None:
+        """Refresh derived state after ``self.verts/cells/centers`` change."""
         self._refresh_scalars()
         self._mesh = self._to_polydata()
         self._cell_locator = None
         self._clear_highlight()
         self._build_scene()
         self._update_status()
+
+    def _regen_mesh(self, cache: dict | None, key: tuple, build) -> dict:
+        """Reuse ``cache`` if its ``params`` match ``key``, else call ``build()``.
+
+        ``build()`` must return ``(verts, cells, centers)``. The returned
+        dict is the (possibly-new) cache the caller should store back.
+        Always applies :meth:`_apply_mesh_change` at the end.
+        """
+        if cache is not None and cache["params"] == key:
+            self.verts = cache["verts"]
+            self.cells = cache["cells"]
+            self.centers = cache["centers"]
+        else:
+            v, c, ctr = build()
+            self.verts, self.cells, self.centers = v, c, np.asarray(ctr)
+            cache = {
+                "params": key,
+                "verts": self.verts,
+                "cells": self.cells,
+                "centers": self.centers,
+            }
+        self._apply_mesh_change()
+        return cache
+
+    def _ico_params_key(self) -> tuple:
+        """Cache key identifying the current Ico-tab mesh parameters."""
+        return (self.n, self.max_relax_iters,
+                self.zoom_factor, self.zoom_lon, self.zoom_lat)
+
+    def _regen_synthetic(self) -> None:
+        def build():
+            v, c, ctr, _ = goldberg(
+                n=self.n, relax=self.max_relax_iters > 0,
+                max_iterations=self.max_relax_iters,
+                zoom_factor=self.zoom_factor,
+                zoom_lon=self.zoom_lon, zoom_lat=self.zoom_lat,
+            )
+            return v, c, ctr
+        self._ico_cache = self._regen_mesh(
+            self._ico_cache, self._ico_params_key(), build)
 
     def _on_n(self, n):
         self.n = n
@@ -906,19 +920,15 @@ class MainWindow(QMainWindow):
                 self.lmdz_dzoomx, self.lmdz_dzoomy,
                 self.lmdz_taux, self.lmdz_tauy)
 
-    def _regen_lonlat(self):
-        """Build (or reuse) the synthetic LonLat mesh and render it."""
-        key = self._lonlat_params_key()
-        cached = self._lonlat_cache
-        if cached is not None and cached["params"] == key:
-            self.verts = cached["verts"]
-            self.cells = cached["cells"]
-            self.centers = cached["centers"]
-        else:
-            # latlon_mesh raises ValueError for invalid LMDZ-zoom combinations
-            # (the 2β-G>0 check). Let it propagate — _on_lmdz_zoom catches it
-            # and triggers the snap-back + red error message.
-            v, c, ctr = latlon_mesh(
+    def _regen_lonlat(self) -> None:
+        """Build (or reuse) the synthetic LonLat mesh and render it.
+
+        ``latlon_mesh`` raises ``ValueError`` for invalid LMDZ-zoom combinations
+        (the 2β-G>0 check). Let it propagate — ``_on_lmdz_zoom`` catches it
+        and triggers the snap-back + red error message.
+        """
+        def build():
+            return latlon_mesh(
                 iim=self.iim, jjm=self.jjm,
                 clon=self.lmdz_clon, clat=self.lmdz_clat,
                 grossismx=self.lmdz_grossismx,
@@ -926,19 +936,8 @@ class MainWindow(QMainWindow):
                 dzoomx=self.lmdz_dzoomx, dzoomy=self.lmdz_dzoomy,
                 taux=self.lmdz_taux, tauy=self.lmdz_tauy,
             )
-            self.verts, self.cells, self.centers = v, c, np.asarray(ctr)
-            self._lonlat_cache = {
-                "params": key,
-                "verts": self.verts,
-                "cells": self.cells,
-                "centers": self.centers,
-            }
-        self._refresh_scalars()
-        self._mesh = self._to_polydata()
-        self._cell_locator = None
-        self._clear_highlight()
-        self._build_scene()
-        self._update_status()
+        self._lonlat_cache = self._regen_mesh(
+            self._lonlat_cache, self._lonlat_params_key(), build)
 
     def _on_iim(self, val):
         self.iim = int(val)
@@ -1122,12 +1121,7 @@ class MainWindow(QMainWindow):
         self.panel.file_tab.display.center_cb.setEnabled(enable)
         self.panel.file_tab.display.bar_cb.setEnabled(enable)
         self.panel.file_tab.display.cmap_box.setEnabled(enable)
-        self._refresh_scalars()
-        self._mesh = self._to_polydata()
-        self._cell_locator = None
-        self._clear_highlight()
-        self._build_scene()
-        self._update_status()
+        self._apply_mesh_change()
 
     def _on_tab_changed(self, idx: int):
         """Tab is the active mesh source — swap the rendered scene accordingly."""
