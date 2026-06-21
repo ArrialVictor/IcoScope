@@ -104,8 +104,9 @@ class MainWindow(QMainWindow):
         self.theme_name = "Dark"
         default_cmap = THEMES[self.theme_name]["cmap"]
 
-        # Per-tab display state. LonLat's state is kept for symmetry even
-        # though it isn't rendered yet.
+        # Per-tab display state — each tab keeps its own coloring, overlays,
+        # animation, and color-by selection. Switching tabs swaps which
+        # state is read by the rendering code (via ``self.state``).
         self._ico_state = _TabState(cmap=default_cmap)
         self._lonlat_state = _TabState(cmap=default_cmap)
         self._file_state = _TabState(cmap=default_cmap)

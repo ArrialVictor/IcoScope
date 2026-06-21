@@ -1,18 +1,27 @@
-"""Load a DYNAMICO / ICOLMDZ grid from NetCDF.
+"""Load a NetCDF grid (icosahedral DYNAMICO/ICOLMDZ, or regular lat-lon LMDZ dyn3d).
 
-Targets the CF-convention "bounds" pattern:
+Two grid families are auto-detected:
 
-    lon(cell)                                ; bounds = "bounds_lon"
-    lat(cell)                                ; bounds = "bounds_lat"
-    bounds_lon(cell, nvertex)
-    bounds_lat(cell, nvertex)
+1. CF-convention "bounds" layout (DYNAMICO / ICOLMDZ icosahedral)::
 
-Variable names are auto-detected (lon vs longitude vs cell_lon, etc.).
-Pentagons are detected by duplicate consecutive vertices in the bounds array.
+       lon(cell)                                ; bounds = "bounds_lon"
+       lat(cell)                                ; bounds = "bounds_lat"
+       bounds_lon(cell, nvertex)
+       bounds_lat(cell, nvertex)
 
-Beyond the grid, `load_grid()` also returns metadata for every cell-shaped
-data variable so the GUI can populate a "Color by" dropdown. `read_field()`
-fetches a single field's values on demand.
+   Variable names are auto-detected (``lon``/``longitude``/``cell_lon`` etc.).
+   Pentagons are detected by duplicate consecutive vertices in the bounds array.
+
+2. LMDZ dyn3d regular lat-lon (Arakawa C-grid) — sniffed by the presence of
+   all four coord variables ``rlonu``, ``rlatu``, ``rlonv``, ``rlatv``. Cell
+   polygons are reconstructed from the coord arrays. Data variables shaped
+   ``(rlatu, rlonv)`` or ``(time, rlatu, rlonv)`` are flattened to the
+   cell-flat layout via :func:`_flatten_dyn3d_field`.
+
+Beyond the grid, :func:`load_grid` also returns metadata for every
+cell-shaped data variable so the GUI can populate a "Color by" dropdown.
+:func:`read_field` fetches a single field's values on demand and handles
+the dyn3d 2-D flatten transparently.
 """
 from __future__ import annotations
 
@@ -21,7 +30,9 @@ from typing import Any
 
 import numpy as np
 
-FieldMeta = dict[str, Any]  # {"units": str, "long_name": str, "shape": tuple, "time_varying": bool}
+FieldMeta = dict[str, Any]
+# Expected keys: units (str), long_name (str), shape (tuple), time_varying (bool).
+# dyn3d files additionally set "kind": "dyn3d" so callers can branch if needed.
 
 CENTER_LON_NAMES = ("lon", "longitude", "cell_lon", "clon")
 CENTER_LAT_NAMES = ("lat", "latitude", "cell_lat", "clat")
@@ -59,17 +70,28 @@ def load_grid(
 ) -> tuple[np.ndarray, list[list[int]], np.ndarray, dict[str, FieldMeta]]:
     """Read the mesh + per-field metadata from a NetCDF file.
 
-    Args:
-        path: path to a CF-convention icosahedral NetCDF file.
+    Auto-routes between the CF-bounds icosahedral path and the LMDZ dyn3d
+    path based on the presence of the dyn3d coord arrays.
+
+    Parameters
+    ----------
+    path : str or Path
+        Path to a CF-convention icosahedral NetCDF file, or to an LMDZ
+        dyn3d file with the four ``rlonu/rlatu/rlonv/rlatv`` coord arrays.
 
     Returns
     -------
-        ``(verts, cells, centers, fields)`` where ``verts`` is ``(V, 3)``
-        deduplicated vertex positions on the unit sphere, ``cells`` is a list
-        of vertex-index lists (length 5 or 6), ``centers`` is ``(C, 3)`` cell
-        centers, and ``fields`` is a dict of per-field metadata. Field values
-        themselves are fetched on demand via :func:`read_field` so the
-        underlying Dataset handle is closed by the time this returns.
+    verts : ndarray
+        ``(V, 3)`` deduplicated vertex positions on the unit sphere.
+    cells : list of list of int
+        Vertex-index lists; length 5 or 6 for icosahedral cells, 3 (polar)
+        or 4 (interior) for dyn3d cells.
+    centers : ndarray
+        ``(C, 3)`` cell-center positions on the unit sphere.
+    fields : dict
+        ``{name: FieldMeta}`` for every cell-shaped data variable. Field
+        values themselves are fetched on demand via :func:`read_field` so
+        the underlying Dataset handle is closed by the time this returns.
     """
     from netCDF4 import Dataset
 
