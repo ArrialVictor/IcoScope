@@ -47,7 +47,7 @@ def _dyn3d_coord_arrays(iim: int, jjm: int) -> tuple[np.ndarray, np.ndarray, np.
     return rlonu, rlonv, rlatu, rlatv
 
 
-def _build_mesh_from_arrays(
+def build_mesh_from_arrays(
     rlonu: np.ndarray,
     rlonv: np.ndarray,
     rlatu: np.ndarray,
@@ -269,7 +269,7 @@ def _tanh_coord_1d(
         plays the role of ``edges`` (length ``jjm+1``, pole-to-pole) and
         ``rlatv`` (the *band* boundaries) plays the role of ``centers``
         (length ``jjm``, interior-only). The caller passes them to
-        ``_build_mesh_from_arrays`` in that role-swapped order — see
+        ``build_mesh_from_arrays`` in that role-swapped order — see
         ``latlon_mesh``.
     """
     pi_d = float(half_domain)        # π or π/2
@@ -364,7 +364,7 @@ def _tanh_coord_1d(
     #   rlonv(i) = invert at offset 0     (cell centers)
     #   rlonu(i) = invert at offset 0.5   (cell edges, shifted half-cell east)
     # Both arrays have length n+1; the last entry is the periodic wrap of
-    # the first and _build_mesh_from_arrays uses only [:n] for the longitude
+    # the first and build_mesh_from_arrays uses only [:n] for the longitude
     # arrays. For latitude, all n+1 entries of the "edges role" are used
     # (pole-to-pole), and the "centers role" is internally truncated to n.
     iv = np.arange(n + 1, dtype=float)               # 0 .. n
@@ -374,7 +374,7 @@ def _tanh_coord_1d(
     # 8. Apply the center offset for longitude (the zoom was built on the
     #    natural [-π, +π] domain, centered at 0; LMDZ then shifts by clon).
     #    For latitude the center is already baked into fhyp_y so we don't
-    #    shift here. Don't wrap: _build_mesh_from_arrays / _lonlat_to_xyz
+    #    shift here. Don't wrap: build_mesh_from_arrays / _lonlat_to_xyz
     #    are 2π-periodic and the arrays must stay monotone.
     if not is_latitude:
         centers_arr = centers_arr + center
@@ -445,7 +445,7 @@ def latlon_mesh(
     )
     if uniform:
         rlonu, rlonv, rlatu, rlatv = _dyn3d_coord_arrays(iim, jjm)
-        return _build_mesh_from_arrays(rlonu, rlonv, rlatu, rlatv)
+        return build_mesh_from_arrays(rlonu, rlonv, rlatu, rlatv)
 
     # Longitude: half-domain π, full 2π. _tanh_coord_1d returns
     # (edges_arr, centers_arr) both of length iim+1 — matching rlonu/rlonv.
@@ -472,4 +472,4 @@ def latlon_mesh(
     rlatu[0] = np.pi / 2.0
     rlatu[-1] = -np.pi / 2.0
 
-    return _build_mesh_from_arrays(rlonu, rlonv, rlatu, rlatv)
+    return build_mesh_from_arrays(rlonu, rlonv, rlatu, rlatv)

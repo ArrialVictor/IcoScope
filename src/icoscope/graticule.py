@@ -1,4 +1,6 @@
 """Latitude/longitude reference lines on the sphere."""
+from typing import Any
+
 import numpy as np
 
 
@@ -15,10 +17,13 @@ def _lonlat_to_xyz(lon_deg: np.ndarray, lat_deg: np.ndarray, radius: float) -> n
 _CACHE = {}
 
 
-def graticule_polydata(radius: float = 1.001, spacing: int = 30, density: int = 180):
+def graticule_polydata(
+    radius: float = 1.001, spacing: int = 30, density: int = 180,
+) -> Any:
     """Return a ``pv.PolyData`` of lat/lon lines at the given spacing (degrees).
 
-    Cached by ``(radius, spacing, density)``.
+    Cached by ``(radius, spacing, density)``. The return type is
+    ``pyvista.PolyData`` — typed as ``Any`` to keep the pyvista import lazy.
     """
     key = (radius, spacing, density)
     if key in _CACHE:
