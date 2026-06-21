@@ -1,2 +1,2 @@
-"""IcoScope — interactive 3D viewer for icosahedral hex/pent grids on a sphere."""
-__version__ = "0.1.0"
+"""IcoScope — interactive 3D viewer for icosahedral and regular lat-lon grids on a sphere."""
+__version__ = "0.1.2"

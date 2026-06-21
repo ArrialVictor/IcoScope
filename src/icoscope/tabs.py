@@ -5,7 +5,8 @@ display controls (Coloring, Overlays, Animation, Export) and re-emits their
 signals at the tab level so the main window can wire connections per-tab.
 
 The shared internal ``_DisplayBlock`` builds the standard display controls;
-``IcoTab`` instantiates it without the time slider, ``FileTab`` with.
+``IcoTab`` and ``LonLatTab`` instantiate it without the time slider,
+``FileTab`` with.
 """
 from os.path import basename
 

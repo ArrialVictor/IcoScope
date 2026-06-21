@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "icoscope"
-version = "0.1.0"
-description = "Interactive 3D viewer for icosahedral (DYNAMICO/ICOLMDZ) hex/pent grids on a sphere."
+version = "0.1.2"
+description = "Interactive 3D viewer for icosahedral (DYNAMICO/ICOLMDZ) and regular lat-lon (LMDZ dyn3d) grids on a sphere."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
