@@ -143,9 +143,11 @@ and adapt the auto-detect lists in `src/icoscope/loader.py`.
 
 LMDZ dyn3d files (regular lat-lon Arakawa C-grid) are also auto-detected via
 the presence of the four 1-D coord arrays `rlonu`, `rlatu`, `rlonv`, `rlatv`;
-the loader reconstructs cell polygons from those edges. Field reading on
-the 2-D `(rlatu, rlonv)` layout is deferred to a follow-up — for now only the
-mesh is shown.
+the loader reconstructs cell polygons from those edges. Data variables
+shaped `(rlatu, rlonv)` or `(time, rlatu, rlonv)` are flattened to the
+cell-flat layout and appear in the "Color by" combo just like icosahedral
+fields. Vertical-profile variables (`(presnivs, …)`) are skipped — they
+need a level-picker UI we don't have yet.
 
 ## License
 

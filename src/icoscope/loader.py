@@ -127,13 +127,15 @@ def load_grid(
 def _load_dyn3d_grid(
     ds,
 ) -> tuple[np.ndarray, list[list[int]], np.ndarray, dict[str, FieldMeta]]:
-    """Build mesh from an LMDZ dyn3d NetCDF (regular lat-lon Arakawa C-grid).
+    """Build mesh and collect field metadata from an LMDZ dyn3d NetCDF.
 
     Reads the four ``rlonu/rlonv/rlatu/rlatv`` coord arrays and reconstructs
-    cell polygons via :func:`icoscope.lonlat._build_mesh_from_arrays`. Field
-    reading is deferred to a follow-up PR — the returned ``fields`` dict is
-    empty for now, so a dyn3d file loads with the mesh but no "Color by"
-    options beyond the synthetic ones.
+    cell polygons via :func:`icoscope.lonlat._build_mesh_from_arrays`. Then
+    scans all data variables for ones shaped ``(rlatu, rlonv)`` or
+    ``(time, rlatu, rlonv)`` and exposes them in the returned ``fields``
+    dict so the GUI's "Color by" combo can offer them. Values are fetched on
+    demand via :func:`read_field`, which flattens the 2-D ``(j, i)`` layout
+    to the cell-flat layout (``j`` outer, ``i`` inner) used by the renderer.
     """
     from .lonlat import _build_mesh_from_arrays
 
@@ -142,8 +144,69 @@ def _load_dyn3d_grid(
     rlatu = np.asarray(ds.variables["rlatu"][:], dtype=float)
     rlatv = np.asarray(ds.variables["rlatv"][:], dtype=float)
     verts, cells, centers = _build_mesh_from_arrays(rlonu, rlonv, rlatu, rlatv)
+
     fields: dict[str, FieldMeta] = {}
+    # A dyn3d data variable lives on the scalar grid (rlatu × rlonv), with an
+    # optional leading time dim. Drop the four coord arrays themselves and
+    # anything purely descriptive (controls, time, presnivs, …).
+    coord_dims = ("rlatu", "rlonv")
+    coord_var_names = set(DYN3D_COORDS) | {
+        "time", "time_counter", "nav_lat", "nav_lon",
+        "controle", "tab_cntrl", "presnivs", "sigs", "sig",
+    }
+    for name, var in ds.variables.items():
+        if name in coord_var_names:
+            continue
+        dims = var.dimensions
+        # Must end in (rlatu, rlonv). Anything else (e.g. (presnivs, rlatu, rlonv)
+        # vertical profiles, or 1-D timeseries) is skipped — needs a different
+        # UI than a flat 2-D scalar per cell.
+        if len(dims) < 2 or dims[-2:] != coord_dims:
+            continue
+        time_varying = len(dims) >= 3 and dims[0] in ("time", "time_counter")
+        if not time_varying and len(dims) > 2:
+            # 3-D without time on the outside — vertical level, skip for now.
+            continue
+        fields[name] = {
+            "units": getattr(var, "units", ""),
+            "long_name": getattr(var, "long_name", name),
+            "shape": tuple(var.shape),
+            "time_varying": time_varying,
+            "kind": "dyn3d",
+        }
+
     return verts, cells, centers, fields
+
+
+def _flatten_dyn3d_field(arr: np.ndarray) -> np.ndarray:
+    """Flatten a dyn3d 2-D field ``(jjp1, iim_or_iip1)`` to the cell-flat layout.
+
+    Cell ordering is ``j`` outer, ``i`` inner (matches
+    :func:`icoscope.lonlat._build_mesh_from_arrays`), so the result is a
+    1-D array of length ``jjm * iim`` (the mesh's cell count).
+
+    Row mapping:
+    - mesh row 0 (north polar band) ← field row 0 (north pole)
+    - mesh rows 1..jjm-2 (interior) ← field rows 1..jjm-2 (rlatu values used
+      by the mesh's interior cell centers)
+    - mesh row jjm-1 (south polar band) ← field row jjp1-1 (south pole)
+
+    Field row ``jjm-1`` is skipped: the synthetic mesh has ``jjm = jjp1 - 1``
+    cell rows whereas LMDZ stores ``jjp1`` scalar rows, and the mesh's
+    south-polar band sits at the south pole (field row ``jjp1-1``) rather
+    than at the southernmost interior latitude (field row ``jjm-1``). The
+    trailing periodic-duplicate column at ``i = iim`` (when present) is
+    dropped.
+    """
+    if arr.ndim != 2:
+        raise ValueError(f"expected 2-D field, got shape {arr.shape}")
+    jjp1, ni = arr.shape
+    iim = ni - 1 if ni >= 2 else ni     # drop the periodic duplicate column
+    jjm = jjp1 - 1
+    out = np.empty((jjm, iim), dtype=arr.dtype)
+    out[: jjm - 1, :] = arr[: jjm - 1, :iim]   # north pole + interior rows used
+    out[jjm - 1, :] = arr[jjp1 - 1, :iim]       # south pole (skips field row jjm-1)
+    return out.reshape(-1)
 
 
 def read_global_attrs(path: str | Path) -> dict[str, str]:
@@ -162,18 +225,30 @@ def read_global_attrs(path: str | Path) -> dict[str, str]:
 def read_field(path: str | Path, name: str, time_index: int = 0) -> np.ndarray:
     """Read a field's values. Returns a 1-D array of length ``n_cells``.
 
-    If the variable is time-dependent (its first dim is not the cell dim),
-    returns the slice at ``time_index``.
+    If the variable is time-dependent (its first dim is the time dim),
+    returns the slice at ``time_index``. For LMDZ dyn3d files (sniffed via
+    the presence of all four ``rlonu/rlatu/rlonv/rlatv`` coord arrays), the
+    resulting 2-D ``(rlatu, rlonv)`` slice is flattened to the cell-flat
+    layout that matches :func:`icoscope.lonlat._build_mesh_from_arrays`.
     """
     from netCDF4 import Dataset
 
     with Dataset(path) as ds:
         if name not in ds.variables:
             raise KeyError(f"field '{name}' not in {path}")
-        data = np.asarray(ds.variables[name][:])
-        if data.ndim > 1:
+        var = ds.variables[name]
+        data = np.asarray(var[:])
+        is_dyn3d = all(c in ds.variables for c in DYN3D_COORDS)
+
+    # Time slice first if the leading dim looks like time.
+    if data.ndim > 1 and is_dyn3d:
+        # dyn3d: shape (time?, rlatu, rlonv) → slice the time dim if present.
+        if data.ndim == 3:
             data = data[time_index]
-        return data
+        return _flatten_dyn3d_field(data)
+    if data.ndim > 1:
+        data = data[time_index]
+    return data
 
 
 def describe(path: str | Path) -> None:
