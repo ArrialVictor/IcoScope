@@ -989,6 +989,12 @@ class MainWindow(QMainWindow):
                 self._render_empty_sphere()
         # Per-tab colour overrides may differ → refresh swatches.
         self._sync_color_buttons()
+        # Auto-rotate is per-tab state but the timer is window-level — sync
+        # the timer to the new active tab's spin_on flag.
+        if self.state.spin_on:
+            self._spin_timer.start()
+        else:
+            self._spin_timer.stop()
 
     def _render_empty_sphere(self):
         """Render a plain blank sphere (no cells, no overlays).
