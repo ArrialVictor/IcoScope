@@ -82,6 +82,10 @@ and **File** (loaded NetCDF). Each tab is a complete, independent
 visualization — switching tabs swaps the rendered mesh and preserves the
 per-tab display settings.
 
+<p align="center">
+  <img src="assets/demo.gif" width="900" alt="IcoScope auto-rotating an icosahedral mesh shaded by surface temperature, with the side panel showing the three mesh-source tabs">
+</p>
+
 Once the viewer is open, fields, coastlines, time slider, themes, etc. are all
 controlled from the side panel.
 
