@@ -26,7 +26,7 @@ from .controls import ControlPanel
 from .graticule import graticule_polydata
 from .grid import goldberg
 from .lonlat import latlon_mesh
-from .tabs import SYNTHETIC_COLOR_BY
+from .tabs import SYNTHETIC_COLOR_BY, Tab
 from .themes import CMAPS, THEMES
 
 
@@ -222,9 +222,9 @@ class MainWindow(QMainWindow):
     def state(self) -> _TabState:
         """Return the ``_TabState`` for the currently-active tab."""
         idx = self.panel.tabs.currentIndex()
-        if idx == 0:
+        if idx == Tab.ICO:
             return self._ico_state
-        if idx == 2:
+        if idx == Tab.FILE:
             return self._file_state
         return self._lonlat_state
 
@@ -232,9 +232,9 @@ class MainWindow(QMainWindow):
     def active_tab(self):
         """Return the currently-active tab widget (Ico, LonLat, or File)."""
         idx = self.panel.tabs.currentIndex()
-        if idx == 0:
+        if idx == Tab.ICO:
             return self.panel.ico_tab
-        if idx == 2:
+        if idx == Tab.FILE:
             return self.panel.file_tab
         return self.panel.lonlat_tab
 
@@ -536,8 +536,17 @@ class MainWindow(QMainWindow):
 
     # ── status bar ────────────────────────────────
     def _update_status(self):
-        if self.file_path:
-            msg = f"file: {os.path.basename(self.file_path)}"
+        idx = self.panel.tabs.currentIndex()
+        n_cells = len(self.cells) if self.cells else 0
+        if idx == Tab.ICO:
+            msg = f"Ico mesh: n={self.n}, {n_cells:,} cells"
+        elif idx == Tab.LONLAT:
+            msg = f"LonLat mesh: iim={self.iim} jjm={self.jjm}, {n_cells:,} cells"
+        elif idx == Tab.FILE:
+            if self.file_path:
+                msg = f"file: {os.path.basename(self.file_path)} ({n_cells:,} cells)"
+            else:
+                msg = "no file loaded"
         else:
             msg = ""
         self.statusBar().showMessage(msg)
@@ -868,26 +877,26 @@ class MainWindow(QMainWindow):
 
     def _on_n(self, n):
         self.n = n
-        if self._on_ico_tab():
+        if self._is_ico_tab_active():
             self._regen_synthetic()
 
     def _on_relax_iters(self, n):
         self.max_relax_iters = n
-        if self._on_ico_tab():
+        if self._is_ico_tab_active():
             self._regen_synthetic()
 
     def _on_zoom(self, factor, lon, lat):
         self.zoom_factor = float(factor)
         self.zoom_lon = float(lon)
         self.zoom_lat = float(lat)
-        if self._on_ico_tab():
+        if self._is_ico_tab_active():
             self._regen_synthetic()
 
-    def _on_ico_tab(self) -> bool:
-        return self.panel.tabs.currentIndex() == 0
+    def _is_ico_tab_active(self) -> bool:
+        return self.panel.tabs.currentIndex() == Tab.ICO
 
-    def _on_lonlat_tab(self) -> bool:
-        return self.panel.tabs.currentIndex() == 1
+    def _is_lonlat_tab_active(self) -> bool:
+        return self.panel.tabs.currentIndex() == Tab.LONLAT
 
     def _lonlat_params_key(self) -> tuple:
         """Cache key identifying the current LonLat-tab mesh parameters."""
@@ -933,12 +942,12 @@ class MainWindow(QMainWindow):
 
     def _on_iim(self, val):
         self.iim = int(val)
-        if self._on_lonlat_tab():
+        if self._is_lonlat_tab_active():
             self._regen_lonlat()
 
     def _on_jjm(self, val):
         self.jjm = int(val)
-        if self._on_lonlat_tab():
+        if self._is_lonlat_tab_active():
             self._regen_lonlat()
 
     def _on_lmdz_zoom(self, clon, clat, gx, gy, dx, dy, tx, ty):
@@ -961,7 +970,7 @@ class MainWindow(QMainWindow):
         # branch below may disable it.
         self.panel.lonlat_tab.set_lmdz_zoom_toggle_enabled(True)
         active = self.panel.lonlat_tab.lmdz_zoom_active
-        if active and self._on_lonlat_tab():
+        if active and self._is_lonlat_tab_active():
             # Full regen with revert-on-error. Revert restores a known-good
             # combination, so the toggle stays enabled either way.
             try:
@@ -1043,7 +1052,7 @@ class MainWindow(QMainWindow):
         self._sync_file_info(path)
         self._activate_file_view()
         # Auto-switch to the File tab so the user sees the loaded data.
-        self.panel.tabs.setCurrentIndex(2)
+        self.panel.tabs.setCurrentIndex(Tab.FILE)
 
     def _sync_file_info(self, path: str):
         """Populate the File tab summary from the currently-loaded file."""
@@ -1120,11 +1129,11 @@ class MainWindow(QMainWindow):
 
     def _on_tab_changed(self, idx: int):
         """Tab is the active mesh source — swap the rendered scene accordingly."""
-        if idx == 0:           # Ico
+        if idx == Tab.ICO:
             self._regen_synthetic()
-        elif idx == 1:         # LonLat
+        elif idx == Tab.LONLAT:
             self._regen_lonlat()
-        elif idx == 2:         # File
+        elif idx == Tab.FILE:
             if self._file_cache is not None:
                 self._activate_file_view()
             else:
@@ -1141,6 +1150,7 @@ class MainWindow(QMainWindow):
             self._spin_timer.start()
         else:
             self._spin_timer.stop()
+        self._update_status()
 
     def _render_empty_sphere(self):
         """Render a plain blank sphere (no cells, no overlays).
@@ -1322,7 +1332,7 @@ def run(
             "cells": cells,
             "centers": np.asarray(centers),
         }
-        w.panel.tabs.setCurrentIndex(1)
+        w.panel.tabs.setCurrentIndex(Tab.LONLAT)
     elif initial_grid == "ico" and not file_path:
         # Seed the ico cache with the mesh the CLI already built so the
         # first File/LonLat → Ico tab switch hits the cache and doesn't
@@ -1350,6 +1360,6 @@ def run(
         w.panel.file_tab.set_file_loaded(True)
         w._sync_file_info(file_path)
         w._activate_file_view()
-        w.panel.tabs.setCurrentIndex(2)
+        w.panel.tabs.setCurrentIndex(Tab.FILE)
     w.show()
     sys.exit(app.exec())

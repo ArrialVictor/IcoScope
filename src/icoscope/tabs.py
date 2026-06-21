@@ -8,6 +8,7 @@ The shared internal ``_DisplayBlock`` builds the standard display controls;
 ``IcoTab`` and ``LonLatTab`` instantiate it without the time slider,
 ``FileTab`` with.
 """
+from enum import IntEnum
 from os.path import basename
 
 from qtpy.QtCore import Qt, Signal
@@ -31,6 +32,18 @@ from qtpy.QtWidgets import (
 )
 
 from .controls import ColorButton, _expand
+
+
+class Tab(IntEnum):
+    """Side-panel tab indices.
+
+    The integer values match the ``addTab`` order in
+    :class:`icoscope.controls.ControlPanel`.
+    """
+
+    ICO = 0
+    LONLAT = 1
+    FILE = 2
 
 # Color-by options shown for the synthetic Ico mesh (no NetCDF loaded). Once a
 # file is loaded, the File tab's combo is replaced by "None" + the file's own
