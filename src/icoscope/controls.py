@@ -198,6 +198,7 @@ class ControlPanel(QWidget):
         self.zoom_factor_box.setDecimals(2)
         self.zoom_factor_box.setValue(1.0)
         self.zoom_factor_box.setKeyboardTracking(False)
+        self.zoom_factor_box.valueChanged.connect(self._on_zoom_spinbox_changed)
         zl.addRow("Factor", self.zoom_factor_box)
 
         self.zoom_lon_box = QDoubleSpinBox()
@@ -206,6 +207,7 @@ class ControlPanel(QWidget):
         self.zoom_lon_box.setDecimals(2)
         self.zoom_lon_box.setValue(0.0)
         self.zoom_lon_box.setKeyboardTracking(False)
+        self.zoom_lon_box.valueChanged.connect(self._on_zoom_spinbox_changed)
         zl.addRow("Center lon (°)", self.zoom_lon_box)
 
         self.zoom_lat_box = QDoubleSpinBox()
@@ -214,13 +216,17 @@ class ControlPanel(QWidget):
         self.zoom_lat_box.setDecimals(2)
         self.zoom_lat_box.setValue(45.0)
         self.zoom_lat_box.setKeyboardTracking(False)
+        self.zoom_lat_box.valueChanged.connect(self._on_zoom_spinbox_changed)
         zl.addRow("Center lat (°)", self.zoom_lat_box)
 
-        # Single Apply button so the three params are picked up together
-        # (avoids three successive mesh rebuilds while the user is editing).
-        self.zoom_apply_btn = QPushButton("Apply zoom")
-        self.zoom_apply_btn.clicked.connect(self._emit_zoom)
-        zl.addRow(self.zoom_apply_btn)
+        # Toggle button mirroring the file-tab Open/Unload pattern: one button,
+        # label swaps with state. Spinboxes stay editable — editing any of
+        # them while zoom is on triggers a live re-apply (same pattern as
+        # the cell-frequency spinbox).
+        self.zoom_toggle_btn = QPushButton("Activate zoom")
+        self._zoom_active = False
+        self.zoom_toggle_btn.clicked.connect(self._toggle_zoom)
+        zl.addRow(self.zoom_toggle_btn)
 
         v.addWidget(zg)
         v.addStretch(1)
@@ -524,38 +530,53 @@ class ControlPanel(QWidget):
         # Tell the outer layout the tab's preferred height has changed.
         self.tabs.updateGeometry()
 
-    def disable_n(self, disabled=True):
-        """Lock the Ico-tab controls and flip the file button to 'Unload'.
+    def set_file_loaded(self, loaded: bool):
+        """Swap the file button between 'Open NetCDF…' and 'Unload NetCDF'."""
+        self._file_btn_mode = "close" if loaded else "open"
+        self.file_btn.setText("Unload NetCDF" if loaded else "Open NetCDF…")
 
-        Also locks the synthetic-zoom controls, which only apply to the
-        Goldberg generator (loaded NetCDF files use their own geometry).
-        """
-        self.n_box.setEnabled(not disabled)
-        self.relax_iters_box.setEnabled(not disabled)
-        self.zoom_factor_box.setEnabled(not disabled)
-        self.zoom_lon_box.setEnabled(not disabled)
-        self.zoom_lat_box.setEnabled(not disabled)
-        self.zoom_apply_btn.setEnabled(not disabled)
-        # switch the file button's role
-        self._file_btn_mode = "close" if disabled else "open"
-        self.file_btn.setText("Unload NetCDF" if disabled else "Open NetCDF…")
+    def _toggle_zoom(self):
+        """Activate or deactivate the synthetic zoom (button-as-toggle)."""
+        if self._zoom_active:
+            self._zoom_active = False
+            self.zoom_toggle_btn.setText("Activate zoom")
+            # Emit factor=1.0 so the mesh regenerates uniform.
+            self.zoom_changed.emit(
+                1.0,
+                self.zoom_lon_box.value(),
+                self.zoom_lat_box.value(),
+            )
+        else:
+            self._zoom_active = True
+            self.zoom_toggle_btn.setText("Deactivate zoom")
+            self.zoom_changed.emit(
+                self.zoom_factor_box.value(),
+                self.zoom_lon_box.value(),
+                self.zoom_lat_box.value(),
+            )
 
-    def _emit_zoom(self):
-        """Emit ``zoom_changed`` with the current factor / lon / lat values."""
-        self.zoom_changed.emit(
-            self.zoom_factor_box.value(),
-            self.zoom_lon_box.value(),
-            self.zoom_lat_box.value(),
-        )
+    def _on_zoom_spinbox_changed(self, _value):
+        """Live re-apply when any zoom spinbox is edited while zoom is active."""
+        if self._zoom_active:
+            self.zoom_changed.emit(
+                self.zoom_factor_box.value(),
+                self.zoom_lon_box.value(),
+                self.zoom_lat_box.value(),
+            )
 
     def set_zoom(self, factor, lon, lat):
-        """Sync the zoom spinboxes to the given values without emitting."""
+        """Sync the zoom spinboxes (and toggle state) to the given values."""
         for box, val in ((self.zoom_factor_box, factor),
                          (self.zoom_lon_box, lon),
                          (self.zoom_lat_box, lat)):
             box.blockSignals(True)
             box.setValue(float(val))
             box.blockSignals(False)
+        # If a non-identity zoom is being loaded (e.g. from CLI flags),
+        # flip the toggle button to the active state without re-emitting.
+        active = abs(float(factor) - 1.0) >= 1e-12
+        self._zoom_active = active
+        self.zoom_toggle_btn.setText("Deactivate zoom" if active else "Activate zoom")
 
     def _on_file_btn_clicked(self):
         if self._file_btn_mode == "open":

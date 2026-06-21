@@ -133,6 +133,10 @@ class MainWindow(QMainWindow):
         self.panel.play_speed_changed.connect(self._on_play_speed_changed)
         self.panel.screenshot_clicked.connect(self._on_screenshot)
         self.panel.vector_export_clicked.connect(self._on_vector_export)
+        self.panel.tabs.currentChanged.connect(self._on_tab_changed)
+
+        # Cached file mesh so File→Ico→File doesn't trigger a reload.
+        self._file_cache: dict | None = None
 
         # build scene + interactions
         self._refresh_scalars()
@@ -705,24 +709,24 @@ class MainWindow(QMainWindow):
         self._update_status()
 
     def _on_n(self, n):
-        if self.file_path:
-            return
         self.n = n
-        self._regen_synthetic()
+        if self._on_ico_tab():
+            self._regen_synthetic()
 
     def _on_relax_iters(self, n):
-        if self.file_path:
-            return
         self.max_relax_iters = n
-        self._regen_synthetic()
+        if self._on_ico_tab():
+            self._regen_synthetic()
 
     def _on_zoom(self, factor, lon, lat):
-        if self.file_path:
-            return
         self.zoom_factor = float(factor)
         self.zoom_lon = float(lon)
         self.zoom_lat = float(lat)
-        self._regen_synthetic()
+        if self._on_ico_tab():
+            self._regen_synthetic()
+
+    def _on_ico_tab(self) -> bool:
+        return self.panel.tabs.currentIndex() == 0
 
     def _on_open_file(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -737,25 +741,19 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Load failed", str(e))
             return
         self.file_path = path
-        self.verts, self.cells, self.centers = verts, cells, np.asarray(centers)
         self.file_fields = fields
-        # File loaded → restrict Color by to None + the file's actual fields.
-        items = ["None"] + list(fields.keys())
-        self.panel.set_color_by_items(items)
-        if fields:
-            first = next(iter(fields.keys()))
-            self.panel.set_color_by(first)
-            self.color_by = first
-        else:
-            self.color_by = "None"
-        self._refresh_scalars()
-        self._mesh = self._to_polydata()
-        self._cell_locator = None
-        self._clear_highlight()
-        self.panel.disable_n(True)
+        self._file_cache = {
+            "path": path,
+            "verts": verts,
+            "cells": cells,
+            "centers": np.asarray(centers),
+            "fields": fields,
+        }
+        self.panel.set_file_loaded(True)
         self._sync_file_info(path)
-        self._build_scene()
-        self._update_status()
+        self._activate_file_view()
+        # Auto-switch to the File tab so the user sees the loaded data.
+        self.panel.tabs.setCurrentIndex(2)
 
     def _sync_file_info(self, path: str):
         """Populate the File tab summary from the currently-loaded file."""
@@ -783,12 +781,51 @@ class MainWindow(QMainWindow):
             return
         self.file_path = None
         self.file_fields = {}
+        self._file_cache = None
         self.panel.set_color_by_items(SYNTHETIC_COLOR_BY)
         self.color_by = "None"
         self.panel.set_time_steps(0)
-        self.panel.disable_n(False)
+        self.panel.set_file_loaded(False)
         self.panel.set_file_info()
-        self._regen_synthetic()
+        # Switching to the Ico tab triggers _on_tab_changed → _regen_synthetic.
+        self.panel.tabs.setCurrentIndex(0)
+
+    def _activate_file_view(self):
+        """Render the cached file mesh (must be called only when _file_cache is set)."""
+        c = self._file_cache
+        assert c is not None
+        self.verts, self.cells, self.centers = c["verts"], c["cells"], c["centers"]
+        items = ["None"] + list(c["fields"].keys())
+        self.panel.set_color_by_items(items)
+        if c["fields"]:
+            first = next(iter(c["fields"].keys()))
+            self.panel.set_color_by(first)
+            self.color_by = first
+        else:
+            self.color_by = "None"
+        self._refresh_scalars()
+        self._mesh = self._to_polydata()
+        self._cell_locator = None
+        self._clear_highlight()
+        self._build_scene()
+        self._update_status()
+
+    def _on_tab_changed(self, idx: int):
+        """Tab is the active mesh source — swap the rendered scene accordingly."""
+        if idx == 0:           # Ico
+            # Ico view always reflects current synthetic params; cheap to rebuild.
+            # Reset color_by to a synthetic option BEFORE rebuilding the mesh,
+            # otherwise stale file-field selections produce a scalar array sized
+            # for the file and crash when applied to the Ico mesh.
+            self.panel.set_color_by_items(SYNTHETIC_COLOR_BY)
+            self.color_by = "None"
+            self.panel.set_color_by("None")
+            self._regen_synthetic()
+        elif idx == 2:         # File
+            if self._file_cache is not None:
+                self._activate_file_view()
+            # else: no file loaded — nothing to render, leave whatever's there.
+        # idx == 1 (LonLat) is a placeholder for now; view unchanged.
 
     def _on_time_changed(self, idx):
         if idx == self.time_index:
@@ -912,22 +949,22 @@ def run(verts, cells, centers, initial_n=8, relax=True, file_path=None,
     w = MainWindow(verts, cells, centers, initial_n=initial_n, relax=relax,
                    zoom_factor=zoom_factor, zoom_lon=zoom_lon, zoom_lat=zoom_lat)
     if file_path:
-        # Load the file's fields into the panel as if user had clicked Open.
+        # Load the file's mesh + fields as if the user had clicked Open in
+        # the File tab. _on_open_file's logic is reused via the cache path.
         from .loader import load_grid
-        _v, _c, _ctr, fields = load_grid(file_path)
+        f_verts, f_cells, f_centers, fields = load_grid(file_path)
         w.file_path = file_path
         w.file_fields = fields
-        items = ["None"] + list(fields.keys())
-        w.panel.set_color_by_items(items)
-        if fields:
-            first = next(iter(fields.keys()))
-            w.panel.set_color_by(first)
-            w.color_by = first
-        w._refresh_scalars()
-        w._mesh = w._to_polydata()
-        w.panel.disable_n(True)
+        w._file_cache = {
+            "path": file_path,
+            "verts": f_verts,
+            "cells": f_cells,
+            "centers": np.asarray(f_centers),
+            "fields": fields,
+        }
+        w.panel.set_file_loaded(True)
         w._sync_file_info(file_path)
-        w._build_scene()
-        w._update_status()
+        w._activate_file_view()
+        w.panel.tabs.setCurrentIndex(2)
     w.show()
     sys.exit(app.exec())
