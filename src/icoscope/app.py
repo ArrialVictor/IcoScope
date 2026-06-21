@@ -1,6 +1,7 @@
 """Qt main window: 3D viewer + control panel + status bar."""
 import os
 import sys
+from dataclasses import dataclass, field
 from datetime import datetime
 
 import numpy as np
@@ -24,14 +25,36 @@ from .coastlines import coastline_polydata
 from .controls import ControlPanel
 from .graticule import graticule_polydata
 from .grid import goldberg
+from .tabs import SYNTHETIC_COLOR_BY
 from .themes import CMAPS, THEMES
 
-# Color-by options shown when no NetCDF is loaded. Once a file is loaded, the
-# dropdown is replaced by "None" + the file's own field names so the
-# physicist's data isn't buried among synthetic demo fields.
-SYNTHETIC_COLOR_BY = [
-    "None", "Latitude", "Cell kind", "Mock temperature", "Realistic temperature",
-]
+
+@dataclass
+class _TabState:
+    """Per-tab display state — colormap, overlays, widths, color overrides.
+
+    Each tab in the side panel owns one of these so switching tabs is fully
+    stateful: the user's choices on the Ico tab don't leak into the File tab
+    and vice-versa.
+    """
+
+    color_by: str = "None"
+    cmap: str = "viridis"
+    coastlines_on: bool = False
+    graticule_on: bool = False
+    edges_on: bool = True
+    colorbar_on: bool = True
+    center_zero: bool = False
+    spin_on: bool = False
+    edge_color_override: str | None = None
+    coast_color_override: str | None = None
+    grat_color_override: str | None = None
+    edge_width: float = 0.6
+    coast_width: float = 1.2
+    grat_width: float = 0.6
+    time_index: int = 0
+    # file-only fields
+    file_fields: dict = field(default_factory=dict)
 
 
 class MainWindow(QMainWindow):
@@ -46,15 +69,12 @@ class MainWindow(QMainWindow):
             self.setWindowIcon(QIcon(icon_path))
         self.resize(1320, 840)
 
-        # state
+        # geometry state (window-level)
         self.verts = verts
         self.cells = cells
         self.centers = np.asarray(centers)
         self.scalars = None           # what we actually render
-        self.color_by = "None"
         self.file_path = None
-        self.file_fields = {}         # {name: metadata} loaded from NetCDF
-        self.time_index = 0
         self.n = initial_n
         self.max_relax_iters = 200 if relax else 0
         self.zoom_factor = float(zoom_factor)
@@ -62,20 +82,15 @@ class MainWindow(QMainWindow):
         self.zoom_lat = float(zoom_lat)
         self.transparent_export = False
 
+        # Theme is window-level (background colour + default overlay tints).
         self.theme_name = "Dark"
-        self.cmap = THEMES[self.theme_name]["cmap"]
-        self.coastlines_on = False
-        self.graticule_on = False
-        self.edges_on = True
-        self.colorbar_on = True
-        self.center_zero = False
-        self.spin_on = False
-        self.edge_color_override = None
-        self.coast_color_override = None
-        self.grat_color_override = None
-        self.edge_width = 0.6
-        self.coast_width = 1.2
-        self.grat_width = 0.6
+        default_cmap = THEMES[self.theme_name]["cmap"]
+
+        # Per-tab display state. LonLat's state is kept for symmetry even
+        # though it isn't rendered yet.
+        self._ico_state = _TabState(cmap=default_cmap)
+        self._lonlat_state = _TabState(cmap=default_cmap)
+        self._file_state = _TabState(cmap=default_cmap)
 
         # central layout
         central = QWidget()
@@ -83,7 +98,7 @@ class MainWindow(QMainWindow):
         h.setContentsMargins(0, 0, 0, 0)
         self.plotter = QtInteractor(central)
         h.addWidget(self.plotter.interactor, stretch=1)
-        self.panel = ControlPanel(list(THEMES), CMAPS)
+        self.panel = ControlPanel(CMAPS)
         h.addWidget(self.panel)
         self.setCentralWidget(central)
 
@@ -91,52 +106,52 @@ class MainWindow(QMainWindow):
         self._build_lonlat_widget()
         self.statusBar().showMessage("ready")
 
-        # initial sync of panel state
-        self.panel.n_box.blockSignals(True)
-        self.panel.n_box.setValue(initial_n)
-        self.panel.n_box.blockSignals(False)
-        self.panel.relax_iters_box.blockSignals(True)
-        self.panel.relax_iters_box.setValue(self.max_relax_iters)
-        self.panel.relax_iters_box.blockSignals(False)
-        self.panel.set_zoom(self.zoom_factor, self.zoom_lon, self.zoom_lat)
-        self.panel.set_theme(self.theme_name)
-        self.panel.set_cmap(self.cmap)
+        # initial sync of panel widgets
+        ico = self.panel.ico_tab
+        ico.n_box.blockSignals(True)
+        ico.n_box.setValue(initial_n)
+        ico.n_box.blockSignals(False)
+        ico.relax_iters_box.blockSignals(True)
+        ico.relax_iters_box.setValue(self.max_relax_iters)
+        ico.relax_iters_box.blockSignals(False)
+        ico.set_zoom(self.zoom_factor, self.zoom_lon, self.zoom_lat)
+        for tab in (self.panel.ico_tab, self.panel.file_tab):
+            tab.set_cmap(default_cmap)
         self._sync_color_buttons()
-        # color-by initially "None" → disable cmap-related widgets
-        self.panel.center_cb.setEnabled(False)
-        self.panel.bar_cb.setEnabled(False)
-        self.panel.cmap_box.setEnabled(False)
 
-        # wire signals
-        self.panel.theme_changed.connect(self._on_theme)
-        self.panel.cmap_changed.connect(self._on_cmap)
-        self.panel.coastlines_toggled.connect(self._on_coast)
-        self.panel.graticule_toggled.connect(self._on_grat)
-        self.panel.edges_toggled.connect(self._on_edges)
-        self.panel.colorbar_toggled.connect(self._on_colorbar)
-        self.panel.color_by_changed.connect(self._on_color_by)
-        self.panel.center_zero_toggled.connect(self._on_center_zero)
-        self.panel.edge_color_changed.connect(self._on_edge_color)
-        self.panel.coast_color_changed.connect(self._on_coast_color)
-        self.panel.grat_color_changed.connect(self._on_grat_color)
-        self.panel.edge_width_changed.connect(self._on_edge_width)
-        self.panel.coast_width_changed.connect(self._on_coast_width)
-        self.panel.grat_width_changed.connect(self._on_grat_width)
-        self.panel.autorotate_toggled.connect(self._on_spin)
-        self.panel.n_changed.connect(self._on_n)
-        self.panel.relax_iters_changed.connect(self._on_relax_iters)
-        self.panel.zoom_changed.connect(self._on_zoom)
-        self.panel.open_file_clicked.connect(self._on_open_file)
-        self.panel.close_file_clicked.connect(self._on_close_file)
-        self.panel.time_changed.connect(self._on_time_changed)
-        self.panel.play_toggled.connect(self._on_play_toggled)
-        self.panel.play_speed_changed.connect(self._on_play_speed_changed)
-        self.panel.screenshot_clicked.connect(self._on_screenshot)
-        self.panel.vector_export_clicked.connect(self._on_vector_export)
+        # wire signals — display controls live on each tab independently
+        for tab in (self.panel.ico_tab, self.panel.file_tab):
+            tab.cmap_changed.connect(self._on_cmap)
+            tab.coastlines_toggled.connect(self._on_coast)
+            tab.graticule_toggled.connect(self._on_grat)
+            tab.edges_toggled.connect(self._on_edges)
+            tab.colorbar_toggled.connect(self._on_colorbar)
+            tab.color_by_changed.connect(self._on_color_by)
+            tab.center_zero_toggled.connect(self._on_center_zero)
+            tab.edge_color_changed.connect(self._on_edge_color)
+            tab.coast_color_changed.connect(self._on_coast_color)
+            tab.grat_color_changed.connect(self._on_grat_color)
+            tab.edge_width_changed.connect(self._on_edge_width)
+            tab.coast_width_changed.connect(self._on_coast_width)
+            tab.grat_width_changed.connect(self._on_grat_width)
+            tab.autorotate_toggled.connect(self._on_spin)
+            tab.screenshot_clicked.connect(self._on_screenshot)
+            tab.vector_export_clicked.connect(self._on_vector_export)
+
+        # Tab-specific signals
+        self.panel.ico_tab.n_changed.connect(self._on_n)
+        self.panel.ico_tab.relax_iters_changed.connect(self._on_relax_iters)
+        self.panel.ico_tab.zoom_changed.connect(self._on_zoom)
+        self.panel.file_tab.open_file_clicked.connect(self._on_open_file)
+        self.panel.file_tab.close_file_clicked.connect(self._on_close_file)
+        self.panel.file_tab.time_changed.connect(self._on_time_changed)
+        self.panel.file_tab.play_toggled.connect(self._on_play_toggled)
+        self.panel.file_tab.play_speed_changed.connect(self._on_play_speed_changed)
         self.panel.tabs.currentChanged.connect(self._on_tab_changed)
 
-        # Cached file mesh so File→Ico→File doesn't trigger a reload.
+        # Cached meshes so tab-switching doesn't trigger expensive recomputes.
         self._file_cache: dict | None = None
+        self._ico_cache: dict | None = None
 
         # build scene + interactions
         self._refresh_scalars()
@@ -151,21 +166,46 @@ class MainWindow(QMainWindow):
         self._attach_spin_timer()
         self._update_status()
 
+    # ── per-tab state plumbing ─────────────────────
+    @property
+    def state(self) -> _TabState:
+        """Return the ``_TabState`` for the currently-active tab."""
+        idx = self.panel.tabs.currentIndex()
+        if idx == 0:
+            return self._ico_state
+        if idx == 2:
+            return self._file_state
+        return self._lonlat_state
+
+    @property
+    def active_tab(self):
+        """Return the currently-active tab widget (Ico, LonLat, or File)."""
+        idx = self.panel.tabs.currentIndex()
+        if idx == 0:
+            return self.panel.ico_tab
+        if idx == 2:
+            return self.panel.file_tab
+        return self.panel.lonlat_tab
+
     # ── colors ─────────────────────────────────────
     def _edge_color(self):
-        return self.edge_color_override or THEMES[self.theme_name]["edge"]
+        return self.state.edge_color_override or THEMES[self.theme_name]["edge"]
 
     def _coast_color(self):
-        return self.coast_color_override or THEMES[self.theme_name]["coast"]
+        return self.state.coast_color_override or THEMES[self.theme_name]["coast"]
 
     def _grat_color(self):
-        return self.grat_color_override or THEMES[self.theme_name].get(
+        return self.state.grat_color_override or THEMES[self.theme_name].get(
             "grat", self._coast_color())
 
     def _sync_color_buttons(self):
-        self.panel.set_edge_color(self._color_to_hex(self._edge_color()))
-        self.panel.set_coast_color(self._color_to_hex(self._coast_color()))
-        self.panel.set_grat_color(self._color_to_hex(self._grat_color()))
+        hex_edge = self._color_to_hex(self._edge_color())
+        hex_coast = self._color_to_hex(self._coast_color())
+        hex_grat = self._color_to_hex(self._grat_color())
+        for tab in (self.panel.ico_tab, self.panel.file_tab):
+            tab.set_edge_color(hex_edge)
+            tab.set_coast_color(hex_coast)
+            tab.set_grat_color(hex_grat)
 
     @staticmethod
     def _color_to_hex(c):
@@ -185,7 +225,7 @@ class MainWindow(QMainWindow):
         return mesh
 
     def _clim(self):
-        if self.scalars is None or not self.center_zero:
+        if self.scalars is None or not self.state.center_zero:
             return None
         s = np.asarray(self.scalars)
         a = float(np.nanmax(np.abs(s)))
@@ -193,40 +233,51 @@ class MainWindow(QMainWindow):
 
     # ── rendering ─────────────────────────────────
     def _build_scene(self):
+        # Defer to the empty-sphere path when there's no mesh to render
+        # (File tab pre-load, LonLat placeholder). This makes overlay
+        # toggles a no-op in that state instead of crashing.
+        if self._mesh is None:
+            self._render_empty_sphere()
+            return
+        # Coming back from the empty-sphere state, the "empty" actor stays
+        # in the plotter unless we explicitly drop it — it would render
+        # underneath the real mesh.
+        self.plotter.remove_actor("empty", reset_camera=False, render=False)
         theme = THEMES[self.theme_name]
         self.plotter.set_background(theme["bg"])
+        st = self.state
 
         self.plotter.add_mesh(
             self._mesh, name="grid",
             scalars="scalars" if self.scalars is not None else None,
-            cmap=self.cmap,
+            cmap=st.cmap,
             clim=self._clim(),
-            show_edges=self.edges_on,
+            show_edges=st.edges_on,
             edge_color=self._edge_color(),
-            line_width=self.edge_width,
+            line_width=st.edge_width,
             smooth_shading=False,
-            show_scalar_bar=self.colorbar_on and self.scalars is not None,
+            show_scalar_bar=st.colorbar_on and self.scalars is not None,
             reset_camera=False,
         )
 
-        if self.coastlines_on:
+        if st.coastlines_on:
             try:
                 cl = coastline_polydata(radius=1.001)
                 self.plotter.add_mesh(cl, name="coast",
                                       color=self._coast_color(),
-                                      line_width=self.coast_width,
+                                      line_width=st.coast_width,
                                       pickable=False, reset_camera=False)
             except Exception as e:
                 self.statusBar().showMessage(f"coastlines failed: {e}")
         else:
             self.plotter.remove_actor("coast", reset_camera=False, render=False)
 
-        if self.graticule_on:
+        if st.graticule_on:
             try:
                 g = graticule_polydata(radius=1.002, spacing=30)
                 self.plotter.add_mesh(g, name="grat",
                                       color=self._grat_color(),
-                                      line_width=self.grat_width,
+                                      line_width=st.grat_width,
                                       opacity=0.6, pickable=False, reset_camera=False)
             except Exception as e:
                 self.statusBar().showMessage(f"graticule failed: {e}")
@@ -239,12 +290,16 @@ class MainWindow(QMainWindow):
     def _on_escape(self):
         self._clear_highlight()
         self._clear_lonlat()
-        if self.spin_on:
-            self.spin_on = False
+        if self.state.spin_on:
+            self.state.spin_on = False
             self._spin_timer.stop()
-            self.panel.spin_cb.blockSignals(True)
-            self.panel.spin_cb.setChecked(False)
-            self.panel.spin_cb.blockSignals(False)
+            # Uncheck on whichever tab's spin checkbox is currently checked.
+            for tab in (self.panel.ico_tab, self.panel.file_tab):
+                cb = tab.display.spin_cb
+                if cb.isChecked():
+                    cb.blockSignals(True)
+                    cb.setChecked(False)
+                    cb.blockSignals(False)
         self.plotter.render()
 
     # ── Qt stylesheet for the panel ───────────────
@@ -500,6 +555,19 @@ class MainWindow(QMainWindow):
     def _build_menubar(self):
         mb = self.menuBar()
 
+        # View → Theme → Dark / Light / CB-safe. Theme is window-level
+        # (affects plotter background and default overlay colours), not a
+        # per-tab setting, so it lives in the menu bar.
+        view_menu = mb.addMenu("&View")
+        theme_menu = view_menu.addMenu("Theme")
+        self._theme_actions: dict[str, QAction] = {}
+        for name in THEMES:
+            act = QAction(name, self, checkable=True)
+            act.setChecked(name == self.theme_name)
+            act.triggered.connect(lambda _checked, n=name: self._on_theme(n))
+            theme_menu.addAction(act)
+            self._theme_actions[name] = act
+
         help_menu = mb.addMenu("&Help")
 
         keys_act = QAction("Keyboard && mouse", self)
@@ -563,46 +631,57 @@ class MainWindow(QMainWindow):
     # ── slots ─────────────────────────────────────
     def _on_theme(self, name):
         self.theme_name = name
+        # Keep the menu's checkmark in sync (mutually-exclusive).
+        for n, act in getattr(self, "_theme_actions", {}).items():
+            act.setChecked(n == name)
         suggested = THEMES[name]["cmap"]
-        if suggested != self.cmap:
-            self.cmap = suggested
-            self.panel.set_cmap(suggested)
-        # if user hasn't overridden, refresh swatches
+        # Push the suggested cmap onto every tab whose cmap matched a known
+        # theme default (otherwise the user has explicitly chosen, leave it).
+        for tab_state, tab_widget in (
+            (self._ico_state, self.panel.ico_tab),
+            (self._file_state, self.panel.file_tab),
+            (self._lonlat_state, None),
+        ):
+            tab_state.cmap = suggested
+            if tab_widget is not None:
+                tab_widget.set_cmap(suggested)
         self._sync_color_buttons()
         self._build_scene()
         self._update_status()
 
     def _on_cmap(self, name):
-        self.cmap = name
+        self.state.cmap = name
         self._build_scene()
 
     def _on_coast(self, on):
-        self.coastlines_on = on
+        self.state.coastlines_on = on
         self._build_scene()
 
     def _on_grat(self, on):
-        self.graticule_on = on
+        self.state.graticule_on = on
         self._build_scene()
 
     def _on_edges(self, on):
-        self.edges_on = on
+        self.state.edges_on = on
         self._build_scene()
 
     def _refresh_scalars(self):
         """Compute self.scalars from the current `color_by` choice."""
-        if self.color_by == "Latitude":
+        color_by = self.state.color_by
+        file_fields = self._file_state.file_fields
+        if color_by == "Latitude":
             self.scalars = np.degrees(np.arcsin(self.centers[:, 2]))
-        elif self.color_by == "Cell kind":
+        elif color_by == "Cell kind":
             self.scalars = np.array([0 if len(c) == 5 else 1 for c in self.cells],
                                     dtype=float)
-        elif self.color_by == "Mock temperature":
+        elif color_by == "Mock temperature":
             # Clean synthetic field: latitude gradient + a faint zonal wave.
             # Same formula as the `tas` field in tools/make_test_nc.py.
             c = self.centers / np.linalg.norm(self.centers, axis=1, keepdims=True)
             lat = np.arcsin(np.clip(c[:, 2], -1, 1))
             lon = np.arctan2(c[:, 1], c[:, 0])
             self.scalars = 250.0 + 50.0 * np.cos(lat) + 5.0 * np.cos(2 * lon)
-        elif self.color_by == "Realistic temperature":
+        elif color_by == "Realistic temperature":
             # Earth-like surface-temperature mock: base latitudinal gradient,
             # plus broad Gaussian "hot spots" over major land masses (Sahara,
             # Arabia, Australia, North-American interior) and cold spots
@@ -636,71 +715,95 @@ class MainWindow(QMainWindow):
             T += gauss( 65,  100, -8, 18)   # Siberian winter (mild proxy)
 
             self.scalars = T
-        elif self.color_by in self.file_fields and self.file_path:
+        elif color_by in file_fields and self.file_path:
             from .loader import read_field
-            self.scalars = read_field(self.file_path, self.color_by,
-                                      time_index=self.time_index)
+            self.scalars = read_field(self.file_path, color_by,
+                                      time_index=self._file_state.time_index)
         else:
             self.scalars = None
 
     def _on_color_by(self, name):
-        self.color_by = name
-        self.panel.center_cb.setEnabled(name != "None")
-        self.panel.bar_cb.setEnabled(name != "None")
-        self.panel.cmap_box.setEnabled(name != "None")
-        # configure the time slider if this is a time-varying field
-        meta = self.file_fields.get(name)
+        st = self.state
+        st.color_by = name
+        # Enable/disable cmap-related widgets on the tab that emitted the change.
+        tab = self.active_tab
+        if hasattr(tab, "display"):
+            tab.display.center_cb.setEnabled(name != "None")
+            tab.display.bar_cb.setEnabled(name != "None")
+            tab.display.cmap_box.setEnabled(name != "None")
+        # configure the time slider if this is a time-varying field (File tab only)
+        meta = self._file_state.file_fields.get(name) if tab is self.panel.file_tab else None
         if meta and meta.get("time_varying"):
-            self.panel.set_time_steps(meta["shape"][0])
-            self.time_index = 0
-        else:
-            self.panel.set_time_steps(0)
-            self.time_index = 0
+            self.panel.file_tab.set_time_steps(meta["shape"][0])
+            self._file_state.time_index = 0
+        elif tab is self.panel.file_tab:
+            self.panel.file_tab.set_time_steps(0)
+            self._file_state.time_index = 0
         self._refresh_scalars()
         self._mesh = self._to_polydata()
         self._cell_locator = None
         self._build_scene()
 
     def _on_colorbar(self, on):
-        self.colorbar_on = on
+        self.state.colorbar_on = on
         self._build_scene()
 
     def _on_center_zero(self, on):
-        self.center_zero = on
+        self.state.center_zero = on
         self._build_scene()
 
     def _on_edge_color(self, hex_str):
-        self.edge_color_override = hex_str
+        self.state.edge_color_override = hex_str
         self._build_scene()
 
     def _on_coast_color(self, hex_str):
-        self.coast_color_override = hex_str
+        self.state.coast_color_override = hex_str
         self._build_scene()
 
     def _on_grat_color(self, hex_str):
-        self.grat_color_override = hex_str
+        self.state.grat_color_override = hex_str
         self._build_scene()
 
     def _on_edge_width(self, w):
-        self.edge_width = float(w)
+        self.state.edge_width = float(w)
         self._build_scene()
 
     def _on_coast_width(self, w):
-        self.coast_width = float(w)
+        self.state.coast_width = float(w)
         self._build_scene()
 
     def _on_grat_width(self, w):
-        self.grat_width = float(w)
+        self.state.grat_width = float(w)
         self._build_scene()
 
+    def _ico_params_key(self) -> tuple:
+        """Cache key identifying the current Ico-tab mesh parameters."""
+        return (self.n, self.max_relax_iters,
+                self.zoom_factor, self.zoom_lon, self.zoom_lat)
+
     def _regen_synthetic(self):
-        relax = self.max_relax_iters > 0
-        v, c, ctr, _ = goldberg(n=self.n, relax=relax,
-                                max_iterations=self.max_relax_iters,
-                                zoom_factor=self.zoom_factor,
-                                zoom_lon=self.zoom_lon,
-                                zoom_lat=self.zoom_lat)
-        self.verts, self.cells, self.centers = v, c, np.asarray(ctr)
+        key = self._ico_params_key()
+        cached = self._ico_cache
+        if cached is not None and cached["params"] == key:
+            # Reuse cached mesh — typical on Ico ↔ File tab switches when
+            # the user hasn't touched the Ico params.
+            self.verts = cached["verts"]
+            self.cells = cached["cells"]
+            self.centers = cached["centers"]
+        else:
+            relax = self.max_relax_iters > 0
+            v, c, ctr, _ = goldberg(n=self.n, relax=relax,
+                                    max_iterations=self.max_relax_iters,
+                                    zoom_factor=self.zoom_factor,
+                                    zoom_lon=self.zoom_lon,
+                                    zoom_lat=self.zoom_lat)
+            self.verts, self.cells, self.centers = v, c, np.asarray(ctr)
+            self._ico_cache = {
+                "params": key,
+                "verts": self.verts,
+                "cells": self.cells,
+                "centers": self.centers,
+            }
         self._refresh_scalars()
         self._mesh = self._to_polydata()
         self._cell_locator = None
@@ -741,7 +844,7 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Load failed", str(e))
             return
         self.file_path = path
-        self.file_fields = fields
+        self._file_state.file_fields = fields
         self._file_cache = {
             "path": path,
             "verts": verts,
@@ -749,7 +852,7 @@ class MainWindow(QMainWindow):
             "centers": np.asarray(centers),
             "fields": fields,
         }
-        self.panel.set_file_loaded(True)
+        self.panel.file_tab.set_file_loaded(True)
         self._sync_file_info(path)
         self._activate_file_view()
         # Auto-switch to the File tab so the user sees the loaded data.
@@ -758,8 +861,9 @@ class MainWindow(QMainWindow):
     def _sync_file_info(self, path: str):
         """Populate the File tab summary from the currently-loaded file."""
         from .loader import read_global_attrs
+        fields = self._file_state.file_fields
         n_time = max(
-            (meta["shape"][0] for meta in self.file_fields.values()
+            (meta["shape"][0] for meta in fields.values()
              if meta.get("time_varying")),
             default=0,
         )
@@ -767,10 +871,10 @@ class MainWindow(QMainWindow):
             attrs = read_global_attrs(path)
         except Exception:
             attrs = {}
-        self.panel.set_file_info(
+        self.panel.file_tab.set_file_info(
             path=path,
             n_cells=len(self.cells),
-            n_fields=len(self.file_fields),
+            n_fields=len(fields),
             n_time_steps=n_time,
             attrs=attrs,
         )
@@ -780,13 +884,14 @@ class MainWindow(QMainWindow):
         if not self.file_path:
             return
         self.file_path = None
-        self.file_fields = {}
+        self._file_state.file_fields = {}
         self._file_cache = None
-        self.panel.set_color_by_items(SYNTHETIC_COLOR_BY)
-        self.color_by = "None"
-        self.panel.set_time_steps(0)
-        self.panel.set_file_loaded(False)
-        self.panel.set_file_info()
+        self.panel.file_tab.set_color_by_items(SYNTHETIC_COLOR_BY)
+        self._file_state.color_by = "None"
+        self.panel.file_tab.set_color_by("None")
+        self.panel.file_tab.set_time_steps(0)
+        self.panel.file_tab.set_file_loaded(False)
+        self.panel.file_tab.set_file_info()
         # Switching to the Ico tab triggers _on_tab_changed → _regen_synthetic.
         self.panel.tabs.setCurrentIndex(0)
 
@@ -796,13 +901,13 @@ class MainWindow(QMainWindow):
         assert c is not None
         self.verts, self.cells, self.centers = c["verts"], c["cells"], c["centers"]
         items = ["None"] + list(c["fields"].keys())
-        self.panel.set_color_by_items(items)
+        self.panel.file_tab.set_color_by_items(items)
         if c["fields"]:
             first = next(iter(c["fields"].keys()))
-            self.panel.set_color_by(first)
-            self.color_by = first
+            self.panel.file_tab.set_color_by(first)
+            self._file_state.color_by = first
         else:
-            self.color_by = "None"
+            self._file_state.color_by = "None"
         self._refresh_scalars()
         self._mesh = self._to_polydata()
         self._cell_locator = None
@@ -813,27 +918,52 @@ class MainWindow(QMainWindow):
     def _on_tab_changed(self, idx: int):
         """Tab is the active mesh source — swap the rendered scene accordingly."""
         if idx == 0:           # Ico
-            # Ico view always reflects current synthetic params; cheap to rebuild.
-            # Reset color_by to a synthetic option BEFORE rebuilding the mesh,
-            # otherwise stale file-field selections produce a scalar array sized
-            # for the file and crash when applied to the Ico mesh.
-            self.panel.set_color_by_items(SYNTHETIC_COLOR_BY)
-            self.color_by = "None"
-            self.panel.set_color_by("None")
             self._regen_synthetic()
         elif idx == 2:         # File
             if self._file_cache is not None:
                 self._activate_file_view()
-            # else: no file loaded — nothing to render, leave whatever's there.
-        # idx == 1 (LonLat) is a placeholder for now; view unchanged.
+            else:
+                # No file loaded — show a plain empty sphere instead of
+                # whatever was last rendered. The File tab's overlay
+                # settings are ignored in this state since there's no
+                # geographic data to overlay onto.
+                self._render_empty_sphere()
+        else:                  # LonLat placeholder
+            self._render_empty_sphere()
+        # Per-tab colour overrides may differ → refresh swatches.
+        self._sync_color_buttons()
+
+    def _render_empty_sphere(self):
+        """Render a plain blank sphere (no cells, no overlays).
+
+        Used when a tab is active but has no mesh to show yet — the
+        File tab before any NetCDF is loaded, and the LonLat placeholder
+        tab. Conveys "this is the canvas, populate it" without leaking
+        stale geometry from another tab into the view.
+        """
+        self.plotter.clear()
+        self.plotter.set_background(THEMES[self.theme_name]["bg"])
+        # pv.Sphere uses theta/phi tessellation, which leaves visible latitude
+        # rings even with smooth_shading on. Icosphere has no pole singularity
+        # and no axis-aligned strips, so the surface reads as a clean sphere.
+        sphere = pv.Icosphere(radius=1.0, nsub=5)
+        self.plotter.add_mesh(sphere, name="empty",
+                              color="#777777", show_edges=False,
+                              smooth_shading=True, reset_camera=False)
+        self._mesh = None
+        self.scalars = None
+        self._cell_locator = None
+        self._clear_highlight()
+        self.plotter.render()
+        self._update_status()
 
     def _on_time_changed(self, idx):
-        if idx == self.time_index:
+        if idx == self._file_state.time_index:
             return
-        self.time_index = idx
-        meta = self.file_fields.get(self.color_by)
+        self._file_state.time_index = idx
+        meta = self._file_state.file_fields.get(self._file_state.color_by)
         if meta:
-            self.panel.set_time_label(idx, meta["shape"][0])
+            self.panel.file_tab.set_time_label(idx, meta["shape"][0])
         self._refresh_scalars()
         self._mesh = self._to_polydata()
         self._cell_locator = None
@@ -843,7 +973,7 @@ class MainWindow(QMainWindow):
         if on:
             if not hasattr(self, "_play_timer"):
                 self._play_timer = QTimer(self)
-                self._play_timer.setInterval(self.panel.speed_box.value())
+                self._play_timer.setInterval(self.panel.file_tab.display.speed_box.value())
                 self._play_timer.timeout.connect(self._play_step)
             self._play_timer.start()
         else:
@@ -855,21 +985,22 @@ class MainWindow(QMainWindow):
             self._play_timer.setInterval(ms)
 
     def _play_step(self):
-        meta = self.file_fields.get(self.color_by)
+        meta = self._file_state.file_fields.get(self._file_state.color_by)
         if not meta or not meta.get("time_varying"):
             self._play_timer.stop()
-            self.panel.play_btn.setChecked(False)
+            self.panel.file_tab.display.play_btn.setChecked(False)
             return
         n = meta["shape"][0]
-        new_idx = (self.time_index + 1) % n
-        self.panel.time_slider.setValue(new_idx)   # triggers _on_time_changed
+        new_idx = (self._file_state.time_index + 1) % n
+        # Triggers _on_time_changed via the tab's time_changed signal.
+        self.panel.file_tab.display.time_slider.setValue(new_idx)
 
     def _on_spin(self, on):
         if on:
             self._spin_timer.start()
         else:
             self._spin_timer.stop()
-        self.spin_on = on
+        self.state.spin_on = on
 
     def _on_screenshot(self):
         from .export_dialog import PngExportDialog
@@ -954,7 +1085,7 @@ def run(verts, cells, centers, initial_n=8, relax=True, file_path=None,
         from .loader import load_grid
         f_verts, f_cells, f_centers, fields = load_grid(file_path)
         w.file_path = file_path
-        w.file_fields = fields
+        w._file_state.file_fields = fields
         w._file_cache = {
             "path": file_path,
             "verts": f_verts,
@@ -962,7 +1093,7 @@ def run(verts, cells, centers, initial_n=8, relax=True, file_path=None,
             "centers": np.asarray(f_centers),
             "fields": fields,
         }
-        w.panel.set_file_loaded(True)
+        w.panel.file_tab.set_file_loaded(True)
         w._sync_file_info(file_path)
         w._activate_file_view()
         w.panel.tabs.setCurrentIndex(2)
