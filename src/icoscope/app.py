@@ -149,8 +149,9 @@ class MainWindow(QMainWindow):
         self.panel.file_tab.play_speed_changed.connect(self._on_play_speed_changed)
         self.panel.tabs.currentChanged.connect(self._on_tab_changed)
 
-        # Cached file mesh so File→Ico→File doesn't trigger a reload.
+        # Cached meshes so tab-switching doesn't trigger expensive recomputes.
         self._file_cache: dict | None = None
+        self._ico_cache: dict | None = None
 
         # build scene + interactions
         self._refresh_scalars()
@@ -765,14 +766,34 @@ class MainWindow(QMainWindow):
         self.state.grat_width = float(w)
         self._build_scene()
 
+    def _ico_params_key(self) -> tuple:
+        """Cache key identifying the current Ico-tab mesh parameters."""
+        return (self.n, self.max_relax_iters,
+                self.zoom_factor, self.zoom_lon, self.zoom_lat)
+
     def _regen_synthetic(self):
-        relax = self.max_relax_iters > 0
-        v, c, ctr, _ = goldberg(n=self.n, relax=relax,
-                                max_iterations=self.max_relax_iters,
-                                zoom_factor=self.zoom_factor,
-                                zoom_lon=self.zoom_lon,
-                                zoom_lat=self.zoom_lat)
-        self.verts, self.cells, self.centers = v, c, np.asarray(ctr)
+        key = self._ico_params_key()
+        cached = self._ico_cache
+        if cached is not None and cached["params"] == key:
+            # Reuse cached mesh — typical on Ico ↔ File tab switches when
+            # the user hasn't touched the Ico params.
+            self.verts = cached["verts"]
+            self.cells = cached["cells"]
+            self.centers = cached["centers"]
+        else:
+            relax = self.max_relax_iters > 0
+            v, c, ctr, _ = goldberg(n=self.n, relax=relax,
+                                    max_iterations=self.max_relax_iters,
+                                    zoom_factor=self.zoom_factor,
+                                    zoom_lon=self.zoom_lon,
+                                    zoom_lat=self.zoom_lat)
+            self.verts, self.cells, self.centers = v, c, np.asarray(ctr)
+            self._ico_cache = {
+                "params": key,
+                "verts": self.verts,
+                "cells": self.cells,
+                "centers": self.centers,
+            }
         self._refresh_scalars()
         self._mesh = self._to_polydata()
         self._cell_locator = None
