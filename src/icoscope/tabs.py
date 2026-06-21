@@ -319,7 +319,9 @@ class _DisplayBlock(QWidget):
         """Select *name* in the color-by combo box (no-op if not listed)."""
         i = self.color_by_box.findText(name)
         if i >= 0:
+            self.color_by_box.blockSignals(True)
             self.color_by_box.setCurrentIndex(i)
+            self.color_by_box.blockSignals(False)
 
     def set_color_by_items(self, items: list[str]) -> None:
         """Repopulate the color-by combo while preserving the current selection."""
