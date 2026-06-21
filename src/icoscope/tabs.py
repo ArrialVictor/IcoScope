@@ -15,10 +15,12 @@ from qtpy.QtWidgets import (
     QComboBox,
     QDoubleSpinBox,
     QFormLayout,
+    QFrame,
     QGroupBox,
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QSlider,
     QSpinBox,
@@ -35,6 +37,30 @@ from .controls import ColorButton, _expand
 SYNTHETIC_COLOR_BY = [
     "None", "Latitude", "Cell kind", "Mock temperature", "Realistic temperature",
 ]
+
+
+class _ScrollArea(QScrollArea):
+    """QScrollArea wrapping a tab's content so overflow becomes scrollable.
+
+    Reports the wrapped widget's sizeHint so it cooperates with
+    ``_AdaptiveTabWidget``'s height-following logic — when the panel has
+    enough vertical space the scroll area takes its content's natural
+    size (no scrollbar). When the panel is shorter than the content
+    needs, the scroll area accepts the shorter allocation and shows a
+    vertical scrollbar.
+    """
+
+    def __init__(self, content: QWidget, parent=None):
+        super().__init__(parent)
+        self.setWidget(content)
+        self.setWidgetResizable(True)
+        self.setFrameShape(QFrame.NoFrame)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+
+    def sizeHint(self):
+        w = self.widget()
+        return w.sizeHint() if w is not None else super().sizeHint()
 
 
 class _AdaptiveTabWidget(QTabWidget):
@@ -508,6 +534,8 @@ class LonLatTab(QWidget):
 
     iim_changed = Signal(int)
     jjm_changed = Signal(int)
+    # 8 params: clon, clat, grossismx, grossismy, dzoomx, dzoomy, taux, tauy
+    lmdz_zoom_changed = Signal(float, float, float, float, float, float, float, float)
 
     def __init__(self, cmaps, parent=None):
         super().__init__(parent)
@@ -536,12 +564,135 @@ class LonLatTab(QWidget):
 
         v.addWidget(gs)
 
+        # ── Synthetic zoom (LMDZ tanh) ─────────────
+        zg = QGroupBox("Synthetic zoom (LMDZ tanh)")
+        zl = QFormLayout(zg)
+        zl.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+
+        def _mkbox(lo, hi, step, decimals, value):
+            b = QDoubleSpinBox()
+            b.setRange(lo, hi)
+            b.setSingleStep(step)
+            b.setDecimals(decimals)
+            b.setValue(value)
+            b.setKeyboardTracking(False)
+            b.valueChanged.connect(self._on_lmdz_spinbox_changed)
+            return b
+
+        self.lmdz_clon_box = _mkbox(-180.0, 180.0, 5.0, 2, 0.0)
+        zl.addRow("Center lon (°)", self.lmdz_clon_box)
+        self.lmdz_clat_box = _mkbox(-90.0, 90.0, 5.0, 2, 0.0)
+        zl.addRow("Center lat (°)", self.lmdz_clat_box)
+        self.lmdz_grossismx_box = _mkbox(1.0, 20.0, 0.1, 2, 1.0)
+        zl.addRow("Grossism x", self.lmdz_grossismx_box)
+        self.lmdz_grossismy_box = _mkbox(1.0, 20.0, 0.1, 2, 1.0)
+        zl.addRow("Grossism y", self.lmdz_grossismy_box)
+        self.lmdz_dzoomx_box = _mkbox(0.0, 0.5, 0.01, 3, 0.0)
+        zl.addRow("Dzoom x", self.lmdz_dzoomx_box)
+        self.lmdz_dzoomy_box = _mkbox(0.0, 0.5, 0.01, 3, 0.0)
+        zl.addRow("Dzoom y", self.lmdz_dzoomy_box)
+        self.lmdz_taux_box = _mkbox(0.1, 20.0, 0.5, 2, 3.0)
+        zl.addRow("Tau x", self.lmdz_taux_box)
+        self.lmdz_tauy_box = _mkbox(0.1, 20.0, 0.5, 2, 3.0)
+        zl.addRow("Tau y", self.lmdz_tauy_box)
+
+        self.lmdz_zoom_toggle_btn = QPushButton("Activate zoom")
+        self._lmdz_zoom_active = False
+        self.lmdz_zoom_toggle_btn.clicked.connect(self._toggle_lmdz_zoom)
+        zl.addRow(self.lmdz_zoom_toggle_btn)
+
+        v.addWidget(zg)
+
         # ── Display block ──────────────────────────
         self.display = _DisplayBlock(cmaps, with_time=False)
         v.addWidget(self.display)
         _forward_signals(self, self.display, _DISPLAY_SIGNALS_BASE)
 
         v.addStretch(1)
+
+    # ── LMDZ zoom helpers ────────────────────────────────────────────────
+
+    def _current_lmdz_values(self):
+        return (
+            self.lmdz_clon_box.value(),
+            self.lmdz_clat_box.value(),
+            self.lmdz_grossismx_box.value(),
+            self.lmdz_grossismy_box.value(),
+            self.lmdz_dzoomx_box.value(),
+            self.lmdz_dzoomy_box.value(),
+            self.lmdz_taux_box.value(),
+            self.lmdz_tauy_box.value(),
+        )
+
+    def _toggle_lmdz_zoom(self, *_args):
+        """Activate or deactivate the LMDZ tanh zoom (button-as-toggle)."""
+        if self._lmdz_zoom_active:
+            self._lmdz_zoom_active = False
+            self.lmdz_zoom_toggle_btn.setText("Activate zoom")
+            # Identity emission: grossism = 1 forces uniform fast path.
+            vals = self._current_lmdz_values()
+            self.lmdz_zoom_changed.emit(
+                vals[0], vals[1], 1.0, 1.0, vals[4], vals[5], vals[6], vals[7],
+            )
+        else:
+            self._lmdz_zoom_active = True
+            self.lmdz_zoom_toggle_btn.setText("Deactivate zoom")
+            self.lmdz_zoom_changed.emit(*self._current_lmdz_values())
+
+    @property
+    def lmdz_zoom_active(self) -> bool:
+        """Whether the LMDZ-zoom toggle is currently on."""
+        return self._lmdz_zoom_active
+
+    def set_lmdz_zoom_toggle_enabled(self, enabled: bool):
+        """Enable or disable the Activate/Deactivate zoom button.
+
+        Used by the main window to block activation when the current
+        spinbox combination would fail LMDZ's 2β-G>0 validity check.
+        """
+        self.lmdz_zoom_toggle_btn.setEnabled(enabled)
+
+    def _on_lmdz_spinbox_changed(self, _value):
+        """Re-emit on any LMDZ-zoom spinbox edit, regardless of toggle state.
+
+        The app's slot validates the combination either way — when active it
+        rebuilds the mesh (and reverts on error); when inactive it only
+        runs the cheap validity check and shows the red error message.
+        """
+        self.lmdz_zoom_changed.emit(*self._current_lmdz_values())
+
+    def set_lmdz_zoom(self, clon, clat, grossismx, grossismy,
+                      dzoomx, dzoomy, taux, tauy):
+        """Sync the LMDZ-zoom spinboxes and toggle state to the given values."""
+        # Drop focus before the revert: the line-editor's uncommitted text
+        # would otherwise paint over the value we set until focus leaves.
+        for b in (self.lmdz_clon_box, self.lmdz_clat_box,
+                  self.lmdz_grossismx_box, self.lmdz_grossismy_box,
+                  self.lmdz_dzoomx_box, self.lmdz_dzoomy_box,
+                  self.lmdz_taux_box, self.lmdz_tauy_box):
+            if b.hasFocus():
+                b.clearFocus()
+        for box, val in (
+            (self.lmdz_clon_box, clon),
+            (self.lmdz_clat_box, clat),
+            (self.lmdz_grossismx_box, grossismx),
+            (self.lmdz_grossismy_box, grossismy),
+            (self.lmdz_dzoomx_box, dzoomx),
+            (self.lmdz_dzoomy_box, dzoomy),
+            (self.lmdz_taux_box, taux),
+            (self.lmdz_tauy_box, tauy),
+        ):
+            box.blockSignals(True)
+            box.setValue(float(val))
+            box.blockSignals(False)
+        active = (
+            abs(float(grossismx) - 1.0) >= 1e-12
+            or abs(float(grossismy) - 1.0) >= 1e-12
+        )
+        self._lmdz_zoom_active = active
+        self.lmdz_zoom_toggle_btn.setText(
+            "Deactivate zoom" if active else "Activate zoom"
+        )
 
     # ── proxy display methods ────────────────────────────────────────────
 

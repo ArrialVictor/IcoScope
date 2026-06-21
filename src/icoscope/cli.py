@@ -45,6 +45,30 @@ def main():
                     help="Schmidt focal-point longitude in degrees (default 0.0)")
     ap.add_argument("--zoom-lat", type=float, default=45.0, metavar="DEG",
                     help="Schmidt focal-point latitude in degrees (default 45.0)")
+    ap.add_argument("--lmdz-clon", type=float, default=0.0, metavar="DEG",
+                    help="LMDZ tanh zoom: focal-point longitude in degrees "
+                         "(LonLat tab only, default 0.0).")
+    ap.add_argument("--lmdz-clat", type=float, default=0.0, metavar="DEG",
+                    help="LMDZ tanh zoom: focal-point latitude in degrees "
+                         "(LonLat tab only, default 0.0).")
+    ap.add_argument("--lmdz-grossismx", type=float, default=1.0, metavar="G",
+                    help="LMDZ tanh zoom: longitudinal refinement factor "
+                         "(default 1.0 = uniform).")
+    ap.add_argument("--lmdz-grossismy", type=float, default=1.0, metavar="G",
+                    help="LMDZ tanh zoom: latitudinal refinement factor "
+                         "(default 1.0 = uniform).")
+    ap.add_argument("--lmdz-dzoomx", type=float, default=0.0, metavar="F",
+                    help="LMDZ tanh zoom: longitudinal half-width as a "
+                         "fraction of 2π (default 0.0).")
+    ap.add_argument("--lmdz-dzoomy", type=float, default=0.0, metavar="F",
+                    help="LMDZ tanh zoom: latitudinal half-width as a "
+                         "fraction of π (default 0.0).")
+    ap.add_argument("--lmdz-taux", type=float, default=3.0, metavar="T",
+                    help="LMDZ tanh zoom: longitudinal transition sharpness "
+                         "(default 3.0).")
+    ap.add_argument("--lmdz-tauy", type=float, default=3.0, metavar="T",
+                    help="LMDZ tanh zoom: latitudinal transition sharpness "
+                         "(default 3.0).")
     ap.add_argument("--describe", action="store_true",
                     help="(with --file) print variables and exit")
     ap.add_argument("--quiet", "-q", action="store_true",
@@ -70,7 +94,13 @@ def main():
             )
     elif args.grid == "lonlat":
         t1 = log(f"building synthetic lat-lon grid iim={args.iim}, jjm={args.jjm}")
-        verts, cells, centers = latlon_mesh(iim=args.iim, jjm=args.jjm)
+        verts, cells, centers = latlon_mesh(
+            iim=args.iim, jjm=args.jjm,
+            clon=args.lmdz_clon, clat=args.lmdz_clat,
+            grossismx=args.lmdz_grossismx, grossismy=args.lmdz_grossismy,
+            dzoomx=args.lmdz_dzoomx, dzoomy=args.lmdz_dzoomy,
+            taux=args.lmdz_taux, tauy=args.lmdz_tauy,
+        )
         if not args.quiet:
             sys.stderr.write(
                 f"  {len(cells)} cells "
@@ -106,7 +136,11 @@ def main():
     run(verts, cells, centers, initial_n=args.generate, relax=not args.no_relax,
         file_path=args.file,
         zoom_factor=args.zoom_factor, zoom_lon=args.zoom_lon, zoom_lat=args.zoom_lat,
-        initial_grid=args.grid, iim=args.iim, jjm=args.jjm)
+        initial_grid=args.grid, iim=args.iim, jjm=args.jjm,
+        lmdz_clon=args.lmdz_clon, lmdz_clat=args.lmdz_clat,
+        lmdz_grossismx=args.lmdz_grossismx, lmdz_grossismy=args.lmdz_grossismy,
+        lmdz_dzoomx=args.lmdz_dzoomx, lmdz_dzoomy=args.lmdz_dzoomy,
+        lmdz_taux=args.lmdz_taux, lmdz_tauy=args.lmdz_tauy)
 
 
 if __name__ == "__main__":

@@ -151,9 +151,249 @@ def _build_mesh_from_arrays(
     return verts, cells, centers
 
 
+_NMAX_DEFAULT = 10000   # auxiliary-grid resolution; LMDZ uses 30000.
+
+
+def _fhyp_x(xtild: np.ndarray, tau: float, dzoom: float) -> np.ndarray:
+    """Evaluate LMDZ's ``fhyp`` for longitude on ``xtild ∈ [0, π]``.
+
+    Mirrors the inner block of ``fxhyp_m.f90`` for ``x >= 0``. The result is
+    extended by symmetry (``fhyp(-x) = fhyp(x)``) by the caller. The function
+    is +1 well outside the zoom window and saturates to -1 inside it (in
+    units of the auxiliary coordinate), with a smooth tanh transition whose
+    sharpness is controlled by ``tau``.
+
+    Singularities at ``x = 0`` and ``x = π`` are handled with the same
+    200·fb-vs-fa branching that LMDZ uses to avoid 0/0.
+    """
+    pi_d = np.pi
+    fa = tau * (0.5 * dzoom - xtild)
+    fb = xtild * (pi_d - xtild)
+    out = np.empty_like(xtild)
+    # default tanh branch
+    with np.errstate(divide="ignore", invalid="ignore"):
+        tanh_arg = np.where(fb != 0.0, fa / fb, 0.0)
+        out[:] = np.tanh(tanh_arg)
+    out = np.where(200.0 * fb < -fa, -1.0, out)
+    out = np.where(200.0 * fb < fa, 1.0, out)
+    out = np.where(xtild == 0.0, 1.0, out)
+    out = np.where(xtild == pi_d, -1.0, out)
+    return out
+
+
+def _fhyp_y(yt: np.ndarray, y0: float, tau: float, dzoom: float) -> np.ndarray:
+    """Evaluate LMDZ's ``fhyp`` for latitude on ``yt ∈ [-π/2, π/2]``.
+
+    Mirrors ``fyhyp_m.f90``: the zoom is built around ``y0 = clat`` directly
+    in the natural coordinate, with the Heaviside-based denominator that
+    keeps the formula well-defined on either side of ``y0``.
+    """
+    pi = np.pi
+    pis2 = 0.5 * pi
+    heavyy0m = 1.0 if -y0 > 0.0 else (0.5 if -y0 == 0.0 else 0.0)
+    heavyy0 = 1.0 if y0 > 0.0 else (0.5 if y0 == 0.0 else 0.0)
+
+    fa = np.zeros_like(yt)
+    fb = np.zeros_like(yt)
+
+    left = yt < y0
+    right = yt > y0
+    # left of y0
+    fa[left] = tau * (yt[left] - y0 + 0.5 * dzoom)
+    fb[left] = (yt[left] - 2.0 * y0 * heavyy0m + pis2) * (y0 - yt[left])
+    # right of y0
+    fa[right] = tau * (y0 - yt[right] + 0.5 * dzoom)
+    fb[right] = (2.0 * y0 * heavyy0 - yt[right] + pis2) * (yt[right] - y0)
+
+    out = np.empty_like(yt)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        tanh_arg = np.where(fb != 0.0, fa / fb, 0.0)
+        out[:] = np.tanh(tanh_arg)
+    out = np.where(200.0 * fb < -fa, -1.0, out)
+    out = np.where(200.0 * fb < fa, 1.0, out)
+
+    y0min = 2.0 * y0 * heavyy0m - pis2
+    y0max = 2.0 * y0 * heavyy0 + pis2
+    out = np.where(yt == y0, 1.0, out)
+    out = np.where((yt == y0min) | (yt == y0max), -1.0, out)
+    return out
+
+
+def _tanh_coord_1d(
+    n: int,
+    half_domain: float,
+    center: float,
+    grossism: float,
+    dzoom_frac: float,
+    tau: float,
+    *,
+    is_latitude: bool,
+    nmax: int = _NMAX_DEFAULT,
+    error_name: str,
+) -> tuple[np.ndarray, np.ndarray]:
+    """LMDZ tanh-zoom coord generator for one dimension.
+
+    Parameters
+    ----------
+    n : int
+        Number of cells along this dimension (``iim`` for longitude, ``jjm``
+        for latitude).
+    half_domain : float
+        ``π`` for longitude (full range ``2π``) or ``π/2`` for latitude
+        (full range ``π``).
+    center : float
+        Zoom focal point in radians (``clon`` or ``clat``).
+    grossism : float
+        Refinement factor ``G ≥ 1``. The cell-size ratio at the focal
+        point is ~``1/G``.
+    dzoom_frac : float
+        Half-width of the zoom window, as a fraction of the full domain
+        (LMDZ's ``dzoomx`` / ``dzoomy``; typical 0.05 … 0.3).
+    tau : float
+        Transition sharpness (LMDZ's ``taux`` / ``tauy``; typical 1 … 6).
+    is_latitude : bool
+        Selects between the longitude (fxhyp) and latitude (fyhyp) variants.
+    nmax : int
+        Auxiliary-grid half-resolution. LMDZ uses 30000; 10000 is enough
+        for visualization (cell positions accurate to ~1e-7 rad).
+    error_name : str
+        Suffix to embed in the validity-error message (``"x"`` or ``"y"``).
+
+    Returns
+    -------
+    tuple of np.ndarray
+        ``(edges, centers)`` — arrays of length ``n + 1`` and ``n``
+        respectively, in radians, on the natural domain (then shifted by
+        ``center`` and wrapped). For longitude, edges == ``rlonu``,
+        centers == ``rlonv``. For latitude, ``rlatu`` (the *band* centers)
+        plays the role of ``edges`` (length ``jjm+1``, pole-to-pole) and
+        ``rlatv`` (the *band* boundaries) plays the role of ``centers``
+        (length ``jjm``, interior-only). The caller passes them to
+        ``_build_mesh_from_arrays`` in that role-swapped order — see
+        ``latlon_mesh``.
+    """
+    pi_d = float(half_domain)        # π or π/2
+    full = 2.0 * pi_d                 # 2π or π
+    dzoom = dzoom_frac * full
+
+    # 1. Auxiliary grid xtild ∈ [-pi_d, +pi_d], 2*nmax intervals.
+    xtild = np.linspace(-pi_d, pi_d, 2 * nmax + 1)
+
+    # 2. Evaluate fhyp on the auxiliary grid.
+    if is_latitude:
+        fhyp = _fhyp_y(xtild, center, tau, dzoom)
+    else:
+        # Symmetry: fhyp(-x) = fhyp(|x|). Build on [0, pi_d] then mirror.
+        fhyp_pos = _fhyp_x(np.abs(xtild), tau, dzoom)
+        fhyp = fhyp_pos
+
+    # 3. Midpoint integral for ffdx / ffdy (trapezoid-equivalent given
+    #    midpoint evaluation on uniform spacing).
+    xmid = 0.5 * (xtild[:-1] + xtild[1:])
+    fxm = (
+        _fhyp_y(xmid, center, tau, dzoom)
+        if is_latitude
+        else _fhyp_x(np.abs(xmid), tau, dzoom)
+    )
+    dx = xtild[1] - xtild[0]
+    # LMDZ's lat path integrates over the full range; lon path uses [0, pi_d]
+    # and doubles (symmetry). Trapezoid over the full grid is equivalent and
+    # avoids edge-case branching.
+    ffdx = float(np.sum(fxm) * dx)
+
+    # 4. Solve for beta. We integrate over the FULL [-pi_d, +pi_d] range, so
+    #    the formula uses `full` (the total domain length), not pi_d. LMDZ's
+    #    longitude path integrates over [0, π] only and uses pi (the half
+    #    domain), but it's an equivalent factor-of-2 cancellation.
+    denom = ffdx - full
+    if abs(denom) < 1e-30:
+        raise ValueError(
+            f"Bad choice of grossism{error_name}, tau{error_name}, "
+            f"dzoom{error_name}. Decrease dzoom{error_name} or "
+            f"grossism{error_name}."
+        )
+    beta = (grossism * ffdx - full) / denom
+
+    if 2.0 * beta - grossism <= 0.0:
+        raise ValueError(
+            f"Bad choice of grossism{error_name}, tau{error_name}, "
+            f"dzoom{error_name}. Decrease dzoom{error_name} or "
+            f"grossism{error_name}."
+        )
+
+    # 5. Density Xprimt at the auxiliary nodes.
+    Xprimt = beta + (grossism - beta) * fhyp
+    # And at midpoints (used for the cumulative integral).
+    xxpr = beta + (grossism - beta) * fxm
+
+    # 6. Cumulative integral Xf on the auxiliary grid.
+    Xf = np.empty_like(xtild)
+    Xf[0] = -pi_d
+    Xf[1:] = -pi_d + np.cumsum(xxpr * dx)
+    # Pin the last node exactly (cancels accumulated rounding).
+    Xf[-1] = pi_d
+
+    # 7. For each target index i, solve Xf(λ) = i*full/n - pi_d.
+    #    We have Xf monotone (since Xprimt > 0); use bracketed Newton on a
+    #    piecewise-linear interpolant, with bisection fallback. Vectorized
+    #    inversion via np.interp is enough for visualization precision.
+
+    def _invert(target_indices: np.ndarray) -> np.ndarray:
+        targets = -pi_d + target_indices * full / n  # uniform image space
+        # The "image space" of Xf is exactly [-pi_d, +pi_d]; values outside
+        # that range correspond to the periodic continuation of rlonu past
+        # the wrap. Bring the target into [-pi_d, +pi_d] for the inversion,
+        # then put back the period offset on the output.
+        period_offset = np.zeros_like(targets)
+        if not is_latitude:
+            # Longitude is periodic; lat is not (it bounds at the poles).
+            shifted = ((targets + pi_d) % full) - pi_d
+            period_offset = targets - shifted
+            targets = shifted
+        out = np.interp(targets, Xf, xtild)
+        # Newton refinement using the density: f(λ) ≈ target + delta;
+        # δλ = (target - Xf(λ)) / Xprimt(λ). Use linear interp for both.
+        for _ in range(3):
+            Xf_at = np.interp(out, xtild, Xf)
+            Xp_at = np.interp(out, xtild, Xprimt)
+            out = out + (targets - Xf_at) / np.maximum(Xp_at, 1e-30)
+            out = np.clip(out, -pi_d, pi_d)
+        return out + period_offset
+
+    # Longitude convention from LMDZ:
+    #   rlonv(i) = invert at offset 0     (cell centers)
+    #   rlonu(i) = invert at offset 0.5   (cell edges, shifted half-cell east)
+    # Both arrays have length n+1; the last entry is the periodic wrap of
+    # the first and _build_mesh_from_arrays uses only [:n] for the longitude
+    # arrays. For latitude, all n+1 entries of the "edges role" are used
+    # (pole-to-pole), and the "centers role" is internally truncated to n.
+    iv = np.arange(n + 1, dtype=float)               # 0 .. n
+    centers_arr = _invert(iv)                        # length n + 1
+    edges_arr = _invert(iv + 0.5)                    # length n + 1
+
+    # 8. Apply the center offset for longitude (the zoom was built on the
+    #    natural [-π, +π] domain, centered at 0; LMDZ then shifts by clon).
+    #    For latitude the center is already baked into fhyp_y so we don't
+    #    shift here. Don't wrap: _build_mesh_from_arrays / _lonlat_to_xyz
+    #    are 2π-periodic and the arrays must stay monotone.
+    if not is_latitude:
+        centers_arr = centers_arr + center
+        edges_arr = edges_arr + center
+
+    return edges_arr, centers_arr
+
+
 def latlon_mesh(
     iim: int = 96,
     jjm: int = 95,
+    clon: float = 0.0,
+    clat: float = 0.0,
+    grossismx: float = 1.0,
+    grossismy: float = 1.0,
+    dzoomx: float = 0.0,
+    dzoomy: float = 0.0,
+    taux: float = 3.0,
+    tauy: float = 3.0,
 ) -> tuple[np.ndarray, list[list[int]], np.ndarray]:
     """Build a synthetic LMDZ-style regular lat-lon mesh on the unit sphere.
 
@@ -163,6 +403,19 @@ def latlon_mesh(
         Number of distinct longitudes (default ``96``, LMDZ low-res).
     jjm : int
         Number of latitude bands (default ``95``, LMDZ low-res).
+    clon, clat : float
+        Zoom focal point in degrees. Ignored when ``grossismx == 1`` and
+        ``grossismy == 1``.
+    grossismx, grossismy : float
+        LMDZ's longitudinal/latitudinal refinement factor (``≥ 1``). At
+        ``1.0`` (default) the mesh is uniform; values above 1 concentrate
+        cells near ``(clon, clat)``.
+    dzoomx, dzoomy : float
+        Half-width of the zoom window, as a fraction of the full domain
+        (LMDZ convention: ``dzoomx ∈ [0, 0.5]`` for the 2π longitude range,
+        ``dzoomy ∈ [0, 0.5]`` for the π latitude range).
+    taux, tauy : float
+        Transition sharpness of the tanh profile. Typical 1 … 6.
 
     Returns
     -------
@@ -173,10 +426,50 @@ def latlon_mesh(
         ``(iim * jjm, 3)`` cell centers. Polar cell centers coincide with the
         pole vertex (matching LMDZ's convention that polar scalars sit AT the
         pole).
+
+    Raises
+    ------
+    ValueError
+        If the chosen ``(grossism, tau, dzoom)`` triple violates LMDZ's
+        ``2β - grossism > 0`` validity condition (typically when
+        ``grossism · dzoom`` is too large).
     """
     if iim < 2:
         raise ValueError(f"iim must be >= 2 (got {iim})")
     if jjm < 1:
         raise ValueError(f"jjm must be >= 1 (got {jjm})")
-    rlonu, rlonv, rlatu, rlatv = _dyn3d_coord_arrays(iim, jjm)
+
+    uniform = (
+        abs(grossismx - 1.0) < 1e-12
+        and abs(grossismy - 1.0) < 1e-12
+    )
+    if uniform:
+        rlonu, rlonv, rlatu, rlatv = _dyn3d_coord_arrays(iim, jjm)
+        return _build_mesh_from_arrays(rlonu, rlonv, rlatu, rlatv)
+
+    # Longitude: half-domain π, full 2π. _tanh_coord_1d returns
+    # (edges_arr, centers_arr) both of length iim+1 — matching rlonu/rlonv.
+    rlonu, rlonv = _tanh_coord_1d(
+        iim, half_domain=np.pi, center=np.radians(clon),
+        grossism=grossismx, dzoom_frac=dzoomx, tau=taux,
+        is_latitude=False, error_name="x",
+    )
+    # Latitude: half-domain π/2, full π. The helper returns
+    # (edges_arr, centers_arr) both of length jjm+1. In LMDZ:
+    #   rlatu has length jjm+1 (band centers, pole-to-pole)
+    #   rlatv has length jjm   (interior band boundaries)
+    # The helper's "centers" role plays rlatu (offset 0, includes poles)
+    # and "edges" role plays rlatv (offset 0.5, interior boundaries).
+    # Truncate rlatv to length jjm. Then flip so latitudes run north→south.
+    lat_edges_full, lat_centers_full = _tanh_coord_1d(
+        jjm, half_domain=np.pi / 2.0, center=np.radians(clat),
+        grossism=grossismy, dzoom_frac=dzoomy, tau=tauy,
+        is_latitude=True, error_name="y",
+    )
+    rlatu = lat_centers_full[::-1]               # length jjm+1, +π/2 → -π/2
+    rlatv = lat_edges_full[:jjm][::-1]           # length jjm
+    # Pin the poles exactly to avoid floating-point drift at ±π/2.
+    rlatu[0] = np.pi / 2.0
+    rlatu[-1] = -np.pi / 2.0
+
     return _build_mesh_from_arrays(rlonu, rlonv, rlatu, rlatv)

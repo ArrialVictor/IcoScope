@@ -63,7 +63,11 @@ class MainWindow(QMainWindow):
 
     def __init__(self, verts, cells, centers, initial_n=8, relax=True,
                  zoom_factor=1.0, zoom_lon=0.0, zoom_lat=45.0,
-                 iim=96, jjm=95):
+                 iim=96, jjm=95,
+                 lmdz_clon=0.0, lmdz_clat=0.0,
+                 lmdz_grossismx=1.0, lmdz_grossismy=1.0,
+                 lmdz_dzoomx=0.0, lmdz_dzoomy=0.0,
+                 lmdz_taux=3.0, lmdz_tauy=3.0):
         super().__init__()
         self.setWindowTitle("IcoScope")
         icon_path = os.path.join(os.path.dirname(__file__), "icon.png")
@@ -85,6 +89,15 @@ class MainWindow(QMainWindow):
         # LonLat-tab synthetic mesh size (LMDZ low-res defaults).
         self.iim = int(iim)
         self.jjm = int(jjm)
+        # LonLat-tab LMDZ tanh-zoom parameters (identity by default).
+        self.lmdz_clon = float(lmdz_clon)
+        self.lmdz_clat = float(lmdz_clat)
+        self.lmdz_grossismx = float(lmdz_grossismx)
+        self.lmdz_grossismy = float(lmdz_grossismy)
+        self.lmdz_dzoomx = float(lmdz_dzoomx)
+        self.lmdz_dzoomy = float(lmdz_dzoomy)
+        self.lmdz_taux = float(lmdz_taux)
+        self.lmdz_tauy = float(lmdz_tauy)
         self.transparent_export = False
 
         # Theme is window-level (background colour + default overlay tints).
@@ -127,6 +140,12 @@ class MainWindow(QMainWindow):
         lonlat.jjm_box.blockSignals(True)
         lonlat.jjm_box.setValue(self.jjm)
         lonlat.jjm_box.blockSignals(False)
+        lonlat.set_lmdz_zoom(
+            self.lmdz_clon, self.lmdz_clat,
+            self.lmdz_grossismx, self.lmdz_grossismy,
+            self.lmdz_dzoomx, self.lmdz_dzoomy,
+            self.lmdz_taux, self.lmdz_tauy,
+        )
         display_tabs = (self.panel.ico_tab, self.panel.lonlat_tab, self.panel.file_tab)
         for tab in display_tabs:
             tab.set_cmap(default_cmap)
@@ -157,6 +176,7 @@ class MainWindow(QMainWindow):
         self.panel.ico_tab.zoom_changed.connect(self._on_zoom)
         self.panel.lonlat_tab.iim_changed.connect(self._on_iim)
         self.panel.lonlat_tab.jjm_changed.connect(self._on_jjm)
+        self.panel.lonlat_tab.lmdz_zoom_changed.connect(self._on_lmdz_zoom)
         self.panel.file_tab.open_file_clicked.connect(self._on_open_file)
         self.panel.file_tab.close_file_clicked.connect(self._on_close_file)
         self.panel.file_tab.time_changed.connect(self._on_time_changed)
@@ -856,7 +876,11 @@ class MainWindow(QMainWindow):
 
     def _lonlat_params_key(self) -> tuple:
         """Cache key identifying the current LonLat-tab mesh parameters."""
-        return (self.iim, self.jjm)
+        return (self.iim, self.jjm,
+                self.lmdz_clon, self.lmdz_clat,
+                self.lmdz_grossismx, self.lmdz_grossismy,
+                self.lmdz_dzoomx, self.lmdz_dzoomy,
+                self.lmdz_taux, self.lmdz_tauy)
 
     def _regen_lonlat(self):
         """Build (or reuse) the synthetic LonLat mesh and render it."""
@@ -867,7 +891,17 @@ class MainWindow(QMainWindow):
             self.cells = cached["cells"]
             self.centers = cached["centers"]
         else:
-            v, c, ctr = latlon_mesh(iim=self.iim, jjm=self.jjm)
+            # latlon_mesh raises ValueError for invalid LMDZ-zoom combinations
+            # (the 2β-G>0 check). Let it propagate — _on_lmdz_zoom catches it
+            # and triggers the snap-back + red error message.
+            v, c, ctr = latlon_mesh(
+                iim=self.iim, jjm=self.jjm,
+                clon=self.lmdz_clon, clat=self.lmdz_clat,
+                grossismx=self.lmdz_grossismx,
+                grossismy=self.lmdz_grossismy,
+                dzoomx=self.lmdz_dzoomx, dzoomy=self.lmdz_dzoomy,
+                taux=self.lmdz_taux, tauy=self.lmdz_tauy,
+            )
             self.verts, self.cells, self.centers = v, c, np.asarray(ctr)
             self._lonlat_cache = {
                 "params": key,
@@ -891,6 +925,83 @@ class MainWindow(QMainWindow):
         self.jjm = int(val)
         if self._on_lonlat_tab():
             self._regen_lonlat()
+
+    def _on_lmdz_zoom(self, clon, clat, gx, gy, dx, dy, tx, ty):
+        # Snapshot the last known good params so we can roll back if the new
+        # ones fail the 2·β - G > 0 validity check inside latlon_mesh.
+        snapshot = (self.lmdz_clon, self.lmdz_clat,
+                    self.lmdz_grossismx, self.lmdz_grossismy,
+                    self.lmdz_dzoomx, self.lmdz_dzoomy,
+                    self.lmdz_taux, self.lmdz_tauy)
+        self.lmdz_clon = float(clon)
+        self.lmdz_clat = float(clat)
+        self.lmdz_grossismx = float(gx)
+        self.lmdz_grossismy = float(gy)
+        self.lmdz_dzoomx = float(dx)
+        self.lmdz_dzoomy = float(dy)
+        self.lmdz_taux = float(tx)
+        self.lmdz_tauy = float(ty)
+
+        # Default: a valid combination keeps the toggle enabled. Either
+        # branch below may disable it.
+        self.panel.lonlat_tab.set_lmdz_zoom_toggle_enabled(True)
+        active = self.panel.lonlat_tab.lmdz_zoom_active
+        if active and self._on_lonlat_tab():
+            # Full regen with revert-on-error. Revert restores a known-good
+            # combination, so the toggle stays enabled either way.
+            try:
+                self._regen_lonlat()
+            except ValueError as e:
+                snap, err = snapshot, str(e)
+                # Defer the revert past the spinbox's own valueChanged handler
+                # so setValue actually repaints the line editor on macOS.
+                QTimer.singleShot(0, lambda: self._revert_lmdz_zoom(snap, err))
+        else:
+            # Zoom off — still validate so the user knows the combination is
+            # bad. We don't snap-back (lets them keep editing settings) but
+            # we grey out the Activate toggle until the combination becomes
+            # valid again, so they can't activate a broken zoom.
+            try:
+                from .lonlat import latlon_mesh
+                latlon_mesh(
+                    iim=4, jjm=4,                # cheap validation grid
+                    clon=self.lmdz_clon, clat=self.lmdz_clat,
+                    grossismx=self.lmdz_grossismx,
+                    grossismy=self.lmdz_grossismy,
+                    dzoomx=self.lmdz_dzoomx, dzoomy=self.lmdz_dzoomy,
+                    taux=self.lmdz_taux, tauy=self.lmdz_tauy,
+                )
+            except ValueError as e:
+                self.panel.lonlat_tab.set_lmdz_zoom_toggle_enabled(False)
+                err = str(e)
+                QTimer.singleShot(0, lambda: self._flash_error(err))
+
+    def _revert_lmdz_zoom(self, snapshot, err_text: str):
+        """Restore the 8 LMDZ-zoom fields + spinboxes from ``snapshot``."""
+        (self.lmdz_clon, self.lmdz_clat,
+         self.lmdz_grossismx, self.lmdz_grossismy,
+         self.lmdz_dzoomx, self.lmdz_dzoomy,
+         self.lmdz_taux, self.lmdz_tauy) = snapshot
+        self.panel.lonlat_tab.set_lmdz_zoom(*snapshot)
+        self._flash_error(err_text)
+
+    def _flash_error(self, msg: str, duration_ms: int = 5000):
+        """Show ``msg`` in red in the status bar for ``duration_ms`` ms.
+
+        Uses a dedicated permanent QLabel widget with rich-text HTML so the
+        red colour bypasses macOS's aggressive style overrides on the
+        QStatusBar's built-in message label.
+        """
+        if not hasattr(self, "_error_label"):
+            self._error_label = QLabel("")
+            self._error_label.setTextFormat(Qt.RichText)
+            # addWidget anchors to the left (where status messages normally sit);
+            # addPermanentWidget would put it on the right.
+            self.statusBar().addWidget(self._error_label, 1)
+        self._error_label.setText(
+            f'<span style="color:#d33; font-weight:bold;">{msg}</span>'
+        )
+        QTimer.singleShot(duration_ms, lambda: self._error_label.setText(""))
 
     def _on_open_file(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -1135,7 +1246,11 @@ class MainWindow(QMainWindow):
 
 def run(verts, cells, centers, initial_n=8, relax=True, file_path=None,
         zoom_factor=1.0, zoom_lon=0.0, zoom_lat=45.0,
-        initial_grid="ico", iim=96, jjm=95):
+        initial_grid="ico", iim=96, jjm=95,
+        lmdz_clon=0.0, lmdz_clat=0.0,
+        lmdz_grossismx=1.0, lmdz_grossismy=1.0,
+        lmdz_dzoomx=0.0, lmdz_dzoomy=0.0,
+        lmdz_taux=3.0, lmdz_tauy=3.0):
     """Create the QApplication, show the main window, and start the Qt event loop."""
     app = QApplication.instance() or QApplication(sys.argv)
     # Set the icon on the QApplication BEFORE any window appears — that's the
@@ -1148,12 +1263,16 @@ def run(verts, cells, centers, initial_n=8, relax=True, file_path=None,
     app.setApplicationDisplayName("IcoScope")
     w = MainWindow(verts, cells, centers, initial_n=initial_n, relax=relax,
                    zoom_factor=zoom_factor, zoom_lon=zoom_lon, zoom_lat=zoom_lat,
-                   iim=iim, jjm=jjm)
+                   iim=iim, jjm=jjm,
+                   lmdz_clon=lmdz_clon, lmdz_clat=lmdz_clat,
+                   lmdz_grossismx=lmdz_grossismx, lmdz_grossismy=lmdz_grossismy,
+                   lmdz_dzoomx=lmdz_dzoomx, lmdz_dzoomy=lmdz_dzoomy,
+                   lmdz_taux=lmdz_taux, lmdz_tauy=lmdz_tauy)
     if initial_grid == "lonlat" and not file_path:
         # Seed the lonlat cache with the mesh the CLI already built, then
         # switch tabs (which triggers _regen_lonlat → cache hit → render).
         w._lonlat_cache = {
-            "params": (w.iim, w.jjm),
+            "params": w._lonlat_params_key(),
             "verts": verts,
             "cells": cells,
             "centers": np.asarray(centers),
