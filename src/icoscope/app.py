@@ -942,19 +942,34 @@ class MainWindow(QMainWindow):
         self.lmdz_dzoomy = float(dy)
         self.lmdz_taux = float(tx)
         self.lmdz_tauy = float(ty)
-        if not self._on_lonlat_tab():
-            return
-        try:
-            self._regen_lonlat()
-        except ValueError as e:
-            # Bad combination — restore state and the spinboxes, flash the
-            # LMDZ error text in red in the status bar. The revert is
-            # deferred via QTimer so it runs after the spinbox finishes
-            # processing its valueChanged signal; otherwise setValue from
-            # inside that handler doesn't always repaint cleanly on macOS.
-            snap = snapshot
-            err = str(e)
-            QTimer.singleShot(0, lambda: self._revert_lmdz_zoom(snap, err))
+
+        active = self.panel.lonlat_tab.lmdz_zoom_active
+        if active and self._on_lonlat_tab():
+            # Full regen with revert-on-error.
+            try:
+                self._regen_lonlat()
+            except ValueError as e:
+                snap, err = snapshot, str(e)
+                # Defer the revert past the spinbox's own valueChanged handler
+                # so setValue actually repaints the line editor on macOS.
+                QTimer.singleShot(0, lambda: self._revert_lmdz_zoom(snap, err))
+        else:
+            # Zoom off (or not on the LonLat tab) — still validate so the
+            # user knows their combination is bad, but don't revert; they're
+            # editing settings, not driving live geometry.
+            try:
+                from .lonlat import latlon_mesh
+                latlon_mesh(
+                    iim=4, jjm=4,                # cheap validation grid
+                    clon=self.lmdz_clon, clat=self.lmdz_clat,
+                    grossismx=self.lmdz_grossismx,
+                    grossismy=self.lmdz_grossismy,
+                    dzoomx=self.lmdz_dzoomx, dzoomy=self.lmdz_dzoomy,
+                    taux=self.lmdz_taux, tauy=self.lmdz_tauy,
+                )
+            except ValueError as e:
+                err = str(e)
+                QTimer.singleShot(0, lambda: self._flash_error(err))
 
     def _revert_lmdz_zoom(self, snapshot, err_text: str):
         """Restore the 8 LMDZ-zoom fields + spinboxes from ``snapshot``."""

@@ -639,10 +639,19 @@ class LonLatTab(QWidget):
             self.lmdz_zoom_toggle_btn.setText("Deactivate zoom")
             self.lmdz_zoom_changed.emit(*self._current_lmdz_values())
 
+    @property
+    def lmdz_zoom_active(self) -> bool:
+        """Whether the LMDZ-zoom toggle is currently on."""
+        return self._lmdz_zoom_active
+
     def _on_lmdz_spinbox_changed(self, _value):
-        """Live re-apply when any LMDZ-zoom spinbox is edited while active."""
-        if self._lmdz_zoom_active:
-            self.lmdz_zoom_changed.emit(*self._current_lmdz_values())
+        """Re-emit on any LMDZ-zoom spinbox edit, regardless of toggle state.
+
+        The app's slot validates the combination either way — when active it
+        rebuilds the mesh (and reverts on error); when inactive it only
+        runs the cheap validity check and shows the red error message.
+        """
+        self.lmdz_zoom_changed.emit(*self._current_lmdz_values())
 
     def set_lmdz_zoom(self, clon, clat, grossismx, grossismy,
                       dzoomx, dzoomy, taux, tauy):
