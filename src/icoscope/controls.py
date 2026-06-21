@@ -198,6 +198,7 @@ class ControlPanel(QWidget):
         self.zoom_factor_box.setDecimals(2)
         self.zoom_factor_box.setValue(1.0)
         self.zoom_factor_box.setKeyboardTracking(False)
+        self.zoom_factor_box.valueChanged.connect(self._on_zoom_spinbox_changed)
         zl.addRow("Factor", self.zoom_factor_box)
 
         self.zoom_lon_box = QDoubleSpinBox()
@@ -206,6 +207,7 @@ class ControlPanel(QWidget):
         self.zoom_lon_box.setDecimals(2)
         self.zoom_lon_box.setValue(0.0)
         self.zoom_lon_box.setKeyboardTracking(False)
+        self.zoom_lon_box.valueChanged.connect(self._on_zoom_spinbox_changed)
         zl.addRow("Center lon (°)", self.zoom_lon_box)
 
         self.zoom_lat_box = QDoubleSpinBox()
@@ -214,11 +216,13 @@ class ControlPanel(QWidget):
         self.zoom_lat_box.setDecimals(2)
         self.zoom_lat_box.setValue(45.0)
         self.zoom_lat_box.setKeyboardTracking(False)
+        self.zoom_lat_box.valueChanged.connect(self._on_zoom_spinbox_changed)
         zl.addRow("Center lat (°)", self.zoom_lat_box)
 
         # Toggle button mirroring the file-tab Open/Unload pattern: one button,
-        # label swaps with state. Spinboxes lock while zoom is on, so changing
-        # parameters means "Deactivate → edit → Activate" (one-thing-at-a-time).
+        # label swaps with state. Spinboxes stay editable — editing any of
+        # them while zoom is on triggers a live re-apply (same pattern as
+        # the cell-frequency spinbox).
         self.zoom_toggle_btn = QPushButton("Activate zoom")
         self._zoom_active = False
         self.zoom_toggle_btn.clicked.connect(self._toggle_zoom)
@@ -534,29 +538,31 @@ class ControlPanel(QWidget):
     def _toggle_zoom(self):
         """Activate or deactivate the synthetic zoom (button-as-toggle)."""
         if self._zoom_active:
-            # Deactivate — emit factor=1.0 so the mesh regenerates uniform.
             self._zoom_active = False
             self.zoom_toggle_btn.setText("Activate zoom")
-            self._set_zoom_spinboxes_enabled(True)
+            # Emit factor=1.0 so the mesh regenerates uniform.
             self.zoom_changed.emit(
                 1.0,
                 self.zoom_lon_box.value(),
                 self.zoom_lat_box.value(),
             )
         else:
-            # Activate — emit current spinbox values and lock them.
             self._zoom_active = True
             self.zoom_toggle_btn.setText("Deactivate zoom")
-            self._set_zoom_spinboxes_enabled(False)
             self.zoom_changed.emit(
                 self.zoom_factor_box.value(),
                 self.zoom_lon_box.value(),
                 self.zoom_lat_box.value(),
             )
 
-    def _set_zoom_spinboxes_enabled(self, enabled: bool):
-        for box in (self.zoom_factor_box, self.zoom_lon_box, self.zoom_lat_box):
-            box.setEnabled(enabled)
+    def _on_zoom_spinbox_changed(self, _value):
+        """Live re-apply when any zoom spinbox is edited while zoom is active."""
+        if self._zoom_active:
+            self.zoom_changed.emit(
+                self.zoom_factor_box.value(),
+                self.zoom_lon_box.value(),
+                self.zoom_lat_box.value(),
+            )
 
     def set_zoom(self, factor, lon, lat):
         """Sync the zoom spinboxes (and toggle state) to the given values."""
@@ -571,7 +577,6 @@ class ControlPanel(QWidget):
         active = abs(float(factor) - 1.0) >= 1e-12
         self._zoom_active = active
         self.zoom_toggle_btn.setText("Deactivate zoom" if active else "Activate zoom")
-        self._set_zoom_spinboxes_enabled(not active)
 
     def _on_file_btn_clicked(self):
         if self._file_btn_mode == "open":
