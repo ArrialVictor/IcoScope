@@ -948,26 +948,37 @@ class MainWindow(QMainWindow):
             self._regen_lonlat()
         except ValueError as e:
             # Bad combination — restore state and the spinboxes, flash the
-            # LMDZ error text in red in the status bar.
-            (self.lmdz_clon, self.lmdz_clat,
-             self.lmdz_grossismx, self.lmdz_grossismy,
-             self.lmdz_dzoomx, self.lmdz_dzoomy,
-             self.lmdz_taux, self.lmdz_tauy) = snapshot
-            self.panel.lonlat_tab.set_lmdz_zoom(*snapshot)
-            self._flash_error(str(e))
+            # LMDZ error text in red in the status bar. The revert is
+            # deferred via QTimer so it runs after the spinbox finishes
+            # processing its valueChanged signal; otherwise setValue from
+            # inside that handler doesn't always repaint cleanly on macOS.
+            snap = snapshot
+            err = str(e)
+            QTimer.singleShot(0, lambda: self._revert_lmdz_zoom(snap, err))
+
+    def _revert_lmdz_zoom(self, snapshot, err_text: str):
+        """Restore the 8 LMDZ-zoom fields + spinboxes from ``snapshot``."""
+        (self.lmdz_clon, self.lmdz_clat,
+         self.lmdz_grossismx, self.lmdz_grossismy,
+         self.lmdz_dzoomx, self.lmdz_dzoomy,
+         self.lmdz_taux, self.lmdz_tauy) = snapshot
+        self.panel.lonlat_tab.set_lmdz_zoom(*snapshot)
+        self._flash_error(err_text)
 
     def _flash_error(self, msg: str, duration_ms: int = 5000):
         """Show ``msg`` in red in the status bar for ``duration_ms`` ms.
 
-        Uses a dedicated permanent QLabel widget rather than the status bar's
-        built-in showMessage — QStatusBar's internal message label often
-        ignores stylesheet color overrides on macOS.
+        Uses a dedicated permanent QLabel widget with rich-text HTML so the
+        red colour bypasses macOS's aggressive style overrides on the
+        QStatusBar's built-in message label.
         """
         if not hasattr(self, "_error_label"):
             self._error_label = QLabel("")
-            self._error_label.setStyleSheet("color: #d33; font-weight: bold;")
+            self._error_label.setTextFormat(Qt.RichText)
             self.statusBar().addPermanentWidget(self._error_label)
-        self._error_label.setText(msg)
+        self._error_label.setText(
+            f'<span style="color:#d33; font-weight:bold;">{msg}</span>'
+        )
         QTimer.singleShot(duration_ms, lambda: self._error_label.setText(""))
 
     def _on_open_file(self):
