@@ -939,8 +939,10 @@ class MainWindow(QMainWindow):
         """
         self.plotter.clear()
         self.plotter.set_background(THEMES[self.theme_name]["bg"])
-        sphere = pv.Sphere(radius=1.0, theta_resolution=64, phi_resolution=32)
-        # Subtle, neutral fill — distinct from any colormap output.
+        # pv.Sphere uses theta/phi tessellation, which leaves visible latitude
+        # rings even with smooth_shading on. Icosphere has no pole singularity
+        # and no axis-aligned strips, so the surface reads as a clean sphere.
+        sphere = pv.Icosphere(radius=1.0, nsub=5)
         self.plotter.add_mesh(sphere, name="empty",
                               color="#777777", show_edges=False,
                               smooth_shading=True, reset_camera=False)
