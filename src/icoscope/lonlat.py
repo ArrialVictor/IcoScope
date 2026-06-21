@@ -108,15 +108,19 @@ def build_mesh_from_arrays(
         for i in range(iim):
             if is_north_pole_band and jjm >= 2:
                 # Triangle: north pole + two interior corners on edge j_edge=0.
+                # West corner first so [pole, west, east] winds CCW viewed
+                # from outside the sphere (right-hand rule: outward normal).
                 a = north_idx
-                b = corner(0, i + 1)   # east corner first to keep CCW from outside
-                c = corner(0, i)
+                b = corner(0, i)
+                c = corner(0, i + 1)
                 cells.append([a, b, c])
             elif is_south_pole_band and jjm >= 2:
                 # Triangle: south pole + two interior corners on edge j_edge=jjm-2.
+                # Order mirrors the north pole: from outside the south pole
+                # (below the sphere) CCW reads the longitudes east-then-west.
                 a = south_idx
-                b = corner(jjm - 2, i)
-                c = corner(jjm - 2, i + 1)
+                b = corner(jjm - 2, i + 1)
+                c = corner(jjm - 2, i)
                 cells.append([a, b, c])
             elif jjm == 1:
                 # Degenerate single-band case: every cell is a "bowtie"
