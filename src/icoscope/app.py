@@ -239,6 +239,10 @@ class MainWindow(QMainWindow):
         if self._mesh is None:
             self._render_empty_sphere()
             return
+        # Coming back from the empty-sphere state, the "empty" actor stays
+        # in the plotter unless we explicitly drop it — it would render
+        # underneath the real mesh.
+        self.plotter.remove_actor("empty", reset_camera=False, render=False)
         theme = THEMES[self.theme_name]
         self.plotter.set_background(theme["bg"])
         st = self.state
