@@ -57,8 +57,11 @@ class _TabState:
     coast_width: float = 1.2
     grat_width: float = 0.6
     time_index: int = 0
+    level_index: int = 0
     # file-only fields
     file_fields: dict = field(default_factory=dict)
+    # presnivs (Pa) for the loaded file, or None if no vertical dim
+    file_levels: object = None
 
 
 class MainWindow(QMainWindow):
@@ -207,6 +210,7 @@ class MainWindow(QMainWindow):
         self.panel.file_tab.open_file_clicked.connect(self._on_open_file)
         self.panel.file_tab.close_file_clicked.connect(self._on_close_file)
         self.panel.file_tab.time_changed.connect(self._on_time_changed)
+        self.panel.file_tab.level_changed.connect(self._on_level_changed)
         self.panel.file_tab.play_toggled.connect(self._on_play_toggled)
         self.panel.file_tab.play_speed_changed.connect(self._on_play_speed_changed)
         self.panel.tabs.currentChanged.connect(self._on_tab_changed)
@@ -563,8 +567,11 @@ class MainWindow(QMainWindow):
             self.scalars = T
         elif color_by in file_fields and self.file_path:
             from .loader import read_field
-            self.scalars = read_field(self.file_path, color_by,
-                                      time_index=self._file_state.time_index)
+            self.scalars = read_field(
+                self.file_path, color_by,
+                time_index=self._file_state.time_index,
+                level_index=self._file_state.level_index,
+            )
         else:
             self.scalars = None
 
@@ -577,14 +584,20 @@ class MainWindow(QMainWindow):
             tab.display.center_cb.setEnabled(name != "None")
             tab.display.bar_cb.setEnabled(name != "None")
             tab.display.cmap_box.setEnabled(name != "None")
-        # configure the time slider if this is a time-varying field (File tab only)
+        # configure the time + level sliders for the active field (File tab only).
         meta = self._file_state.file_fields.get(name) if tab is self.panel.file_tab else None
-        if meta and meta.get("time_varying"):
-            self.panel.file_tab.set_time_steps(meta["shape"][0])
+        if tab is self.panel.file_tab:
+            if meta and meta.get("time_varying"):
+                self.panel.file_tab.set_time_steps(meta["shape"][0])
+            else:
+                self.panel.file_tab.set_time_steps(0)
             self._file_state.time_index = 0
-        elif tab is self.panel.file_tab:
-            self.panel.file_tab.set_time_steps(0)
-            self._file_state.time_index = 0
+            n_levels = meta.get("n_levels", 0) if meta else 0
+            if n_levels > 1 and self._file_state.file_levels is not None:
+                self.panel.file_tab.set_levels(self._file_state.file_levels)
+            else:
+                self.panel.file_tab.set_levels(None)
+            self._file_state.level_index = 0
         self._refresh_scalars()
         self._mesh = self._to_polydata()
         self.picker.invalidate_locator()
@@ -815,19 +828,22 @@ class MainWindow(QMainWindow):
         if not path:
             return
         try:
-            from .loader import load_grid
+            from .loader import load_grid, read_levels
             verts, cells, centers, fields = load_grid(path)
+            levels = read_levels(path)
         except Exception as e:
             QMessageBox.critical(self, "Load failed", str(e))
             return
         self.file_path = path
         self._file_state.file_fields = fields
+        self._file_state.file_levels = levels
         self._file_cache = {
             "path": path,
             "verts": verts,
             "cells": cells,
             "centers": np.asarray(centers),
             "fields": fields,
+            "levels": levels,
         }
         self.panel.file_tab.set_file_loaded(True)
         self._sync_file_info(path)
@@ -862,6 +878,7 @@ class MainWindow(QMainWindow):
             return
         self.file_path = None
         self._file_state.file_fields = {}
+        self._file_state.file_levels = None
         self._file_cache = None
         # File tab's Color by only ever lists file fields, never synthetic
         # options — on unload, just "None" remains.
@@ -875,6 +892,7 @@ class MainWindow(QMainWindow):
         self.panel.file_tab.display.bar_cb.setEnabled(False)
         self.panel.file_tab.display.cmap_box.setEnabled(False)
         self.panel.file_tab.set_time_steps(0)
+        self.panel.file_tab.set_levels(None)
         self.panel.file_tab.set_file_loaded(False)
         self.panel.file_tab.set_file_info()
         # File tab stays active; render the empty sphere. The spin timer
@@ -886,6 +904,7 @@ class MainWindow(QMainWindow):
         c = self._file_cache
         assert c is not None
         self.verts, self.cells, self.centers = c["verts"], c["cells"], c["centers"]
+        self._file_state.file_levels = c.get("levels")
         items = ["None"] + list(c["fields"].keys())
         self.panel.file_tab.set_color_by_items(items)
         if c["fields"]:
@@ -961,6 +980,15 @@ class MainWindow(QMainWindow):
         meta = self._file_state.file_fields.get(self._file_state.color_by)
         if meta:
             self.panel.file_tab.set_time_label(idx, meta["shape"][0])
+        self._refresh_scalars()
+        self._mesh = self._to_polydata()
+        self.picker.invalidate_locator()
+        self._build_scene()
+
+    def _on_level_changed(self, idx):
+        if idx == self._file_state.level_index:
+            return
+        self._file_state.level_index = idx
         self._refresh_scalars()
         self._mesh = self._to_polydata()
         self.picker.invalidate_locator()
@@ -1049,16 +1077,19 @@ def run(
     if file_path:
         # Load the file's mesh + fields as if the user had clicked Open in
         # the File tab. _on_open_file's logic is reused via the cache path.
-        from .loader import load_grid
+        from .loader import load_grid, read_levels
         f_verts, f_cells, f_centers, fields = load_grid(file_path)
+        levels = read_levels(file_path)
         w.file_path = file_path
         w._file_state.file_fields = fields
+        w._file_state.file_levels = levels
         w._file_cache = {
             "path": file_path,
             "verts": f_verts,
             "cells": f_cells,
             "centers": np.asarray(f_centers),
             "fields": fields,
+            "levels": levels,
         }
         w.panel.file_tab.set_file_loaded(True)
         w._sync_file_info(file_path)

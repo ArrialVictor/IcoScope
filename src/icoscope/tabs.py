@@ -113,7 +113,8 @@ _DISPLAY_SIGNALS_BASE = (
     "autorotate_toggled",
     "screenshot_clicked", "vector_export_clicked",
 )
-_DISPLAY_SIGNALS_TIME = ("time_changed", "play_toggled", "play_speed_changed")
+_DISPLAY_SIGNALS_TIME = ("time_changed", "play_toggled", "play_speed_changed",
+                         "level_changed")
 
 
 class IcoTab(QWidget):
@@ -546,6 +547,10 @@ class FileTab(QWidget):
     def set_time_label(self, idx: int, total: int) -> None:
         """Forward to the inner display block."""
         self.display.set_time_label(idx, total)
+
+    def set_levels(self, levels_pa) -> None:
+        """Forward to the inner display block."""
+        self.display.set_levels(levels_pa)
 
     # ── file controls ────────────────────────────────────────────────────
 

@@ -21,14 +21,17 @@ Three grid families are auto-detected, tried in order:
 3. XIOS-interpolated regular lat-lon (the standard ICOLMDZ analysis-output
    format) — 1-D ``lon`` and ``lat`` cell-center coords with no CF bounds and
    no dyn3d staggered arrays. Latitude endpoints must be ``±90°``. Data
-   variables shaped ``(lat, lon)`` or ``(time, lat, lon)`` are flattened via
-   :func:`_flatten_xios_field`; 3-D vertical profiles (``presnivs, lat, lon``)
-   are skipped until a level-picker UI lands.
+   variables shaped ``(lat, lon)``, ``(time, lat, lon)``, ``(presnivs, lat,
+   lon)``, and ``(time, presnivs, lat, lon)`` are all surfaced and flattened
+   via :func:`_flatten_xios_field`.
 
-Beyond the grid, :func:`load_grid` also returns metadata for every
-cell-shaped data variable so the GUI can populate a "Color by" dropdown.
-:func:`read_field` fetches a single field's values on demand and handles
-the dyn3d / XIOS 2-D flatten transparently.
+Beyond the grid, :func:`load_grid` returns metadata for every cell-shaped
+data variable (including ``n_levels`` ≥ 1 when the variable has a vertical
+``presnivs`` dim) so the GUI can populate a "Color by" dropdown and a level
+slider. :func:`read_field` fetches a single field's values on demand,
+slicing optional ``time`` and ``presnivs`` dims first and handling the
+dyn3d / XIOS 2-D flatten transparently. :func:`read_levels` returns the
+``presnivs`` axis values (Pa) for slider labels.
 """
 from __future__ import annotations
 
@@ -38,8 +41,12 @@ from typing import Any
 import numpy as np
 
 FieldMeta = dict[str, Any]
-# Expected keys: units (str), long_name (str), shape (tuple), time_varying (bool).
-# dyn3d files additionally set "kind": "dyn3d" so callers can branch if needed.
+# Expected keys: units (str), long_name (str), shape (tuple), time_varying (bool),
+# n_levels (int — 0 if no vertical dim, otherwise the size of the `presnivs`
+# dim). dyn3d / XIOS files additionally set "kind" so callers can branch.
+
+LEVEL_DIM = "presnivs"
+TIME_DIMS = ("time", "time_counter")
 
 CENTER_LON_NAMES = ("lon", "longitude", "cell_lon", "clon")
 CENTER_LAT_NAMES = ("lat", "latitude", "cell_lat", "clat")
@@ -127,6 +134,7 @@ def load_grid(
                 "long_name": getattr(var, "long_name", name),
                 "shape": tuple(var.shape),
                 "time_varying": time_varying,
+                "n_levels": 0,   # icosahedral path: vertical fields not yet supported
             }
 
     n_cells, n_max = blon.shape
@@ -178,38 +186,56 @@ def _load_dyn3d_grid(
 
     fields: dict[str, FieldMeta] = {}
     # A dyn3d data variable lives on the scalar grid (rlatu × rlonv), with an
-    # optional leading time dim. Drop the four coord arrays themselves and
-    # anything purely descriptive (controls, time, presnivs, …).
+    # optional leading time dim and optional vertical (presnivs) dim. Drop the
+    # four coord arrays themselves and anything purely descriptive.
     coord_dims = ("rlatu", "rlonv")
     coord_var_names = set(DYN3D_COORDS) | {
         "time", "time_counter", "nav_lat", "nav_lon",
         "controle", "tab_cntrl", "presnivs", "sigs", "sig",
     }
+    n_levels_avail = len(ds.dimensions[LEVEL_DIM]) if LEVEL_DIM in ds.dimensions else 0
     for name, var in ds.variables.items():
         if name in coord_var_names:
             continue
-        dims = var.dimensions
-        # Must end in (rlatu, rlonv) and have exactly 2 or 3 dims. 4-D
-        # variables on (time, presnivs, rlatu, rlonv) and 3-D vertical
-        # profiles on (presnivs, rlatu, rlonv) are skipped — they need a
-        # vertical-level picker we don't have yet.
-        if dims[-2:] != coord_dims:
+        meta = _classify_var(var.dimensions, coord_dims, n_levels_avail)
+        if meta is None:
             continue
-        if len(dims) == 2:
-            time_varying = False
-        elif len(dims) == 3 and dims[0] in ("time", "time_counter"):
-            time_varying = True
-        else:
-            continue
+        time_varying, n_levels = meta
         fields[name] = {
             "units": getattr(var, "units", ""),
             "long_name": getattr(var, "long_name", name),
             "shape": tuple(var.shape),
             "time_varying": time_varying,
+            "n_levels": n_levels,
             "kind": "dyn3d",
         }
 
     return verts, cells, centers, fields
+
+
+def _classify_var(
+    dims: tuple[str, ...],
+    horizontal: tuple[str, str],
+    n_levels_avail: int,
+) -> tuple[bool, int] | None:
+    """Return ``(time_varying, n_levels)`` for a variable, or ``None`` to skip.
+
+    Accepts variables whose dims end in ``horizontal`` (e.g. ``(rlatu, rlonv)``
+    for dyn3d, ``(lat, lon)`` for XIOS) and whose leading dims are some prefix
+    of ``[time, presnivs]``. Other layouts are skipped.
+    """
+    if dims[-2:] != horizontal:
+        return None
+    leading = dims[:-2]
+    if len(leading) == 0:
+        return False, 0
+    if len(leading) == 1 and leading[0] in TIME_DIMS:
+        return True, 0
+    if len(leading) == 1 and leading[0] == LEVEL_DIM:
+        return False, n_levels_avail
+    if len(leading) == 2 and leading[0] in TIME_DIMS and leading[1] == LEVEL_DIM:
+        return True, n_levels_avail
+    return None
 
 
 def _flatten_dyn3d_field(arr: np.ndarray) -> np.ndarray:
@@ -272,9 +298,10 @@ def _load_xios_latlon_grid(
 
     Reads 1-D ``lon`` and ``lat`` cell-center coords and reconstructs cell
     polygons via :func:`icoscope.lonlat.build_mesh_from_centers`. Surfaces
-    data variables shaped ``(lat, lon)`` or ``(time, lat, lon)``; 3-D vertical
-    profiles on ``(presnivs, lat, lon)`` and 4-D ``(time, presnivs, lat, lon)``
-    are skipped (need a level-picker UI).
+    data variables shaped ``(lat, lon)``, ``(time, lat, lon)``, ``(presnivs,
+    lat, lon)``, and ``(time, presnivs, lat, lon)``. Vertical layouts get
+    ``n_levels`` set to the size of the ``presnivs`` dim so the GUI can show
+    a level slider.
     """
     from .lonlat import build_mesh_from_centers
 
@@ -289,27 +316,23 @@ def _load_xios_latlon_grid(
 
     fields: dict[str, FieldMeta] = {}
     coord_dims = ("lat", "lon")
-    time_dims = ("time", "time_counter")
     skip_names = {"lon", "lat", "presnivs", "time", "time_counter",
                   "time_centered", "time_counter_bounds", "time_centered_bounds",
                   "nav_lon", "nav_lat"}
+    n_levels_avail = len(ds.dimensions[LEVEL_DIM]) if LEVEL_DIM in ds.dimensions else 0
     for name, var in ds.variables.items():
         if name in skip_names:
             continue
-        dims = var.dimensions
-        if dims[-2:] != coord_dims:
+        meta = _classify_var(var.dimensions, coord_dims, n_levels_avail)
+        if meta is None:
             continue
-        if len(dims) == 2:
-            time_varying = False
-        elif len(dims) == 3 and dims[0] in time_dims:
-            time_varying = True
-        else:
-            continue
+        time_varying, n_levels = meta
         fields[name] = {
             "units": getattr(var, "units", ""),
             "long_name": getattr(var, "long_name", name),
             "shape": tuple(var.shape),
             "time_varying": time_varying,
+            "n_levels": n_levels,
             "kind": "xios",
         }
 
@@ -359,14 +382,17 @@ def read_global_attrs(path: str | Path) -> dict[str, str]:
         return {name: str(ds.getncattr(name)) for name in ds.ncattrs()}
 
 
-def read_field(path: str | Path, name: str, time_index: int = 0) -> np.ndarray:
+def read_field(
+    path: str | Path, name: str, time_index: int = 0, level_index: int = 0,
+) -> np.ndarray:
     """Read a field's values. Returns a 1-D array of length ``n_cells``.
 
-    If the variable is time-dependent (its first dim is the time dim),
-    returns the slice at ``time_index``. For LMDZ dyn3d files (sniffed via
-    the presence of all four ``rlonu/rlatu/rlonv/rlatv`` coord arrays), the
-    resulting 2-D ``(rlatu, rlonv)`` slice is flattened to the cell-flat
-    layout that matches :func:`icoscope.lonlat.build_mesh_from_arrays`.
+    Slices the leading ``time`` dim (if present) at ``time_index``, then the
+    ``presnivs`` dim (if present) at ``level_index``, then dispatches to the
+    dyn3d / XIOS flatten as appropriate. The icosahedral CF-bounds path
+    returns the time-sliced 1-D ``(cell,)`` array directly.
+
+    ``level_index`` is ignored for fields without a vertical dim.
     """
     from netCDF4 import Dataset
 
@@ -374,22 +400,40 @@ def read_field(path: str | Path, name: str, time_index: int = 0) -> np.ndarray:
         if name not in ds.variables:
             raise KeyError(f"field '{name}' not in {path}")
         var = ds.variables[name]
+        dims = var.dimensions
         data = np.asarray(var[:])
         is_dyn3d = all(c in ds.variables for c in DYN3D_COORDS)
         is_xios = not is_dyn3d and not _has_cf_bounds(ds) and _is_xios_latlon(ds)
         xios_south_first = bool(is_xios and ds.variables["lat"][0] < ds.variables["lat"][-1])
 
-    if is_dyn3d and data.ndim > 1:
-        if data.ndim == 3:
-            data = data[time_index]
-        return _flatten_dyn3d_field(data)
-    if is_xios and data.ndim > 1:
-        if data.ndim == 3:
-            data = data[time_index]
-        return _flatten_xios_field(data, xios_south_first)
-    if data.ndim > 1:
+    # Strip leading time + level dims in order, mirroring the LMDZ/XIOS
+    # convention that time always precedes presnivs when both are present.
+    if dims and dims[0] in TIME_DIMS:
         data = data[time_index]
+        dims = dims[1:]
+    if dims and dims[0] == LEVEL_DIM:
+        data = data[level_index]
+        dims = dims[1:]
+
+    if is_dyn3d and data.ndim == 2:
+        return _flatten_dyn3d_field(data)
+    if is_xios and data.ndim == 2:
+        return _flatten_xios_field(data, xios_south_first)
     return data
+
+
+def read_levels(path: str | Path) -> np.ndarray | None:
+    """Return the ``presnivs`` axis values (Pa) if present, else ``None``.
+
+    Used by the GUI to label the vertical-level slider. Returns ``None`` for
+    files with no vertical dim (the slider stays hidden).
+    """
+    from netCDF4 import Dataset
+
+    with Dataset(path) as ds:
+        if LEVEL_DIM not in ds.variables:
+            return None
+        return np.asarray(ds.variables[LEVEL_DIM][:], dtype=float)
 
 
 def describe(path: str | Path) -> None:
