@@ -16,6 +16,7 @@ from qtpy.QtWidgets import (
     QLabel,
     QMainWindow,
     QMessageBox,
+    QSplitter,
     QWidget,
 )
 
@@ -127,15 +128,23 @@ class MainWindow(QMainWindow):
         self._lonlat_state = _TabState(cmap=default_cmap)
         self._file_state = _TabState(cmap=default_cmap)
 
-        # central layout
-        central = QWidget()
-        h = QHBoxLayout(central)
-        h.setContentsMargins(0, 0, 0, 0)
-        self.plotter = QtInteractor(central)
-        h.addWidget(self.plotter.interactor, stretch=1)
+        # central layout: a horizontal splitter so the user can drag the
+        # divider between the 3-D view and the control panel. Index 0 (the
+        # plotter) carries the stretch on window resize; index 1 (the panel)
+        # has a minimum width to stay readable.
+        self.splitter = QSplitter(Qt.Horizontal)
+        self.splitter.setChildrenCollapsible(False)
+        self.splitter.setHandleWidth(4)
+        self.plotter = QtInteractor(self.splitter)
+        self.splitter.addWidget(self.plotter.interactor)
         self.panel = ControlPanel(CMAPS)
-        h.addWidget(self.panel)
-        self.setCentralWidget(central)
+        self.splitter.addWidget(self.panel)
+        self.splitter.setStretchFactor(0, 1)
+        self.splitter.setStretchFactor(1, 0)
+        # Use a wide initial plotter allocation; the panel takes its preferred
+        # width and the splitter clamps to its minimum on shrink.
+        self.splitter.setSizes([1000, ControlPanel.DEFAULT_WIDTH])
+        self.setCentralWidget(self.splitter)
 
         self._theme_actions = _menubar.build_menubar(
             self, self.theme_name, self._on_theme)

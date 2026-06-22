@@ -17,9 +17,14 @@ class ControlPanel(QWidget):
     shared section below the tabs.
     """
 
+    DEFAULT_WIDTH = 320
+    MIN_WIDTH = 220
+
     def __init__(self, cmaps: list[str], parent: QWidget | None = None):
         super().__init__(parent)
-        self.setFixedWidth(320)
+        # Was setFixedWidth(320); now resizable via the splitter in MainWindow.
+        # Keep a sensible minimum so the controls don't collapse to unreadable.
+        self.setMinimumWidth(self.MIN_WIDTH)
         outer = QVBoxLayout(self)
 
         self.tabs = _AdaptiveTabWidget()
