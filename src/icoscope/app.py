@@ -907,14 +907,48 @@ class MainWindow(QMainWindow):
         self._file_state.file_levels = c.get("levels")
         items = ["None"] + list(c["fields"].keys())
         self.panel.file_tab.set_color_by_items(items)
-        if c["fields"]:
-            first = next(iter(c["fields"].keys()))
-            self.panel.file_tab.set_color_by(first)
-            self._file_state.color_by = first
+        # Preserve the previously selected field on re-entry (tab switch back).
+        # Only fall back to the first field if there is no prior selection or
+        # it isn't in the current file's fields (e.g. after Open NetCDF on a
+        # different file).
+        prior = self._file_state.color_by
+        if prior in c["fields"]:
+            desired = prior
+        elif c["fields"]:
+            desired = next(iter(c["fields"].keys()))
         else:
-            self._file_state.color_by = "None"
-        # _on_color_by is what normally toggles these on/off, but set_color_by
-        # above blocks signals to avoid recursion. Sync them by hand so the
+            desired = "None"
+        self.panel.file_tab.set_color_by(desired)
+        self._file_state.color_by = desired
+        # Re-configure the time + level sliders for the chosen field and
+        # restore their saved positions (set_time_steps / set_levels reset
+        # the slider value to 0 — block signals so the restore doesn't fire
+        # _on_time_changed / _on_level_changed; the subsequent
+        # _apply_mesh_change call below rebuilds the scene once).
+        meta = c["fields"].get(desired)
+        if meta and meta.get("time_varying"):
+            self.panel.file_tab.set_time_steps(meta["shape"][0])
+            slider = self.panel.file_tab.display.time_slider
+            slider.blockSignals(True)
+            slider.setValue(self._file_state.time_index)
+            slider.blockSignals(False)
+            self.panel.file_tab.set_time_label(
+                self._file_state.time_index, meta["shape"][0])
+        else:
+            self.panel.file_tab.set_time_steps(0)
+            self._file_state.time_index = 0
+        if meta and meta.get("n_levels", 0) > 1 and self._file_state.file_levels is not None:
+            self.panel.file_tab.set_levels(self._file_state.file_levels)
+            slider = self.panel.file_tab.display.level_slider
+            slider.blockSignals(True)
+            slider.setValue(self._file_state.level_index)
+            slider.blockSignals(False)
+            self.panel.file_tab.display._update_level_label(self._file_state.level_index)
+        else:
+            self.panel.file_tab.set_levels(None)
+            self._file_state.level_index = 0
+        # _on_color_by normally toggles these on/off, but set_color_by above
+        # blocks signals to avoid recursion. Sync them by hand so the
         # cmap/colorbar/center-zero widgets are usable as soon as a file
         # loads (via --file at startup, via Open NetCDF, or via tab-switch
         # back to File after a previous load).
