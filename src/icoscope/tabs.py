@@ -482,19 +482,23 @@ class FileTab(QWidget):
         self.file_btn.clicked.connect(self._on_file_btn_clicked)
         v.addWidget(self.file_btn)
 
-        # File summary block — hidden until a file is loaded.
+        # File summary block — hidden until a file is loaded. All three labels
+        # wrap so a long filename or CF title doesn't stretch the panel sideways.
         self.file_name_label = QLabel("")
         self.file_name_label.setStyleSheet("font-weight: bold; padding-top: 6px;")
+        self.file_name_label.setWordWrap(True)
         self.file_name_label.setVisible(False)
         v.addWidget(self.file_name_label)
 
         self.file_stats_label = QLabel("")
         self.file_stats_label.setStyleSheet("padding-top: 4px;")
+        self.file_stats_label.setWordWrap(True)
         self.file_stats_label.setVisible(False)
         v.addWidget(self.file_stats_label)
 
         self.file_attrs_label = QLabel("")
         self.file_attrs_label.setStyleSheet("color: #888; font-size: 11px; padding-top: 4px;")
+        self.file_attrs_label.setWordWrap(True)
         self.file_attrs_label.setVisible(False)
         v.addWidget(self.file_attrs_label)
 
