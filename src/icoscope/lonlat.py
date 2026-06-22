@@ -47,6 +47,80 @@ def _dyn3d_coord_arrays(iim: int, jjm: int) -> tuple[np.ndarray, np.ndarray, np.
     return rlonu, rlonv, rlatu, rlatv
 
 
+def build_mesh_from_centers(
+    lon_centers: np.ndarray,
+    lat_centers: np.ndarray,
+) -> tuple[np.ndarray, list[list[int]], np.ndarray, bool]:
+    """Build a mesh from 1-D lon/lat cell-center arrays (degrees).
+
+    For XIOS-interpolated regular lat-lon grids where the file only provides
+    1-D ``lon``/``lat`` cell centers — no CF bounds, no dyn3d staggered arrays.
+    The latitude axis must include both poles at its endpoints (``±90°``
+    within ``1e-3°``), which matches the standard XIOS ``axis_def`` used by
+    LMDZ/ICOLMDZ for analysis output.
+
+    Cell-edge longitudes are reconstructed as midpoints between consecutive
+    centers, with periodic wrap; cell-edge latitudes are midpoints between
+    consecutive ``rlatu`` values, identical to the dyn3d convention. Internally
+    builds dyn3d-style ``rlonu/rlonv/rlatu/rlatv`` arrays and delegates to
+    :func:`build_mesh_from_arrays`, so the cell-ordering convention is the
+    same: ``j`` outer (latitude band, north→south), ``i`` inner.
+
+    Parameters
+    ----------
+    lon_centers : ndarray
+        1-D array of cell-center longitudes in degrees, monotonic.
+    lat_centers : ndarray
+        1-D array of cell-center latitudes in degrees, monotonic. Endpoints
+        must coincide with ``±90°``.
+
+    Returns
+    -------
+    verts, cells, centers : tuple
+        Same shape as :func:`build_mesh_from_arrays`.
+    south_first : bool
+        ``True`` if the input ``lat_centers`` was south-to-north (``lat[0] ≈
+        -90°``), so callers reading 2-D ``(lat, lon)`` data variables know to
+        flip the latitude axis before feeding the cell-flat layout.
+    """
+    lon = np.asarray(lon_centers, dtype=float).ravel()
+    lat = np.asarray(lat_centers, dtype=float).ravel()
+    if lon.size < 2 or lat.size < 2:
+        raise ValueError("need at least 2 lon and 2 lat centers")
+    if not (np.all(np.diff(lat) > 0) or np.all(np.diff(lat) < 0)):
+        raise ValueError("lat_centers must be monotonic")
+    south_first = bool(lat[0] < lat[-1])
+    lat_n = lat[::-1] if south_first else lat
+    if abs(lat_n[0] - 90.0) > 1e-3 or abs(lat_n[-1] + 90.0) > 1e-3:
+        raise ValueError(
+            "lat_centers endpoints must be ±90° "
+            f"(got {lat_n[0]:.4f}, {lat_n[-1]:.4f})"
+        )
+
+    iim = lon.size
+    iip1 = iim + 1
+
+    lon_rad = np.radians(lon)
+    rlonv = np.empty(iip1)
+    rlonv[:iim] = lon_rad
+    rlonv[iim] = lon_rad[0] + 2.0 * np.pi
+    # Cell edges: midpoints between consecutive centers, with periodic wrap.
+    rlonu = np.empty(iip1)
+    rlonu[1:iim] = 0.5 * (lon_rad[:-1] + lon_rad[1:])
+    dlon_first = lon_rad[1] - lon_rad[0]
+    dlon_last = lon_rad[-1] - lon_rad[-2]
+    rlonu[0] = lon_rad[0] - 0.5 * dlon_first
+    rlonu[iim] = lon_rad[-1] + 0.5 * dlon_last
+
+    rlatu = np.radians(lat_n)
+    rlatu[0] = np.pi / 2.0
+    rlatu[-1] = -np.pi / 2.0
+    rlatv = 0.5 * (rlatu[:-1] + rlatu[1:])
+
+    verts, cells, centers = build_mesh_from_arrays(rlonu, rlonv, rlatu, rlatv)
+    return verts, cells, centers, south_first
+
+
 def build_mesh_from_arrays(
     rlonu: np.ndarray,
     rlonv: np.ndarray,

@@ -232,8 +232,8 @@ def test_load_dyn3d_missing_coord_falls_through_to_icosa():
             ds.createVariable("rlonu", "f8", ("rlonu",))[:] = np.zeros(4)
             ds.createVariable("rlatu", "f8", ("rlatu",))[:] = np.zeros(3)
             ds.createVariable("rlonv", "f8", ("rlonv",))[:] = np.zeros(4)
-        # Should now fail because the icosa path can't find lon/lat either
-        with pytest.raises(KeyError, match="lon|latitude"):
+        # Should now fail: dyn3d sniffer misses, no CF bounds, no XIOS coords either
+        with pytest.raises((KeyError, ValueError), match="lon|latitude|grid layout"):
             load_grid(path)
     finally:
         path.unlink(missing_ok=True)

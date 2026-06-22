@@ -1,8 +1,14 @@
-"""Load a NetCDF grid (icosahedral DYNAMICO/ICOLMDZ, or regular lat-lon LMDZ dyn3d).
+"""Load a NetCDF grid (icosahedral DYNAMICO/ICOLMDZ, or regular lat-lon).
 
-Two grid families are auto-detected:
+Three grid families are auto-detected, tried in order:
 
-1. CF-convention "bounds" layout (DYNAMICO / ICOLMDZ icosahedral)::
+1. LMDZ dyn3d regular lat-lon (Arakawa C-grid) — sniffed by the presence of
+   all four coord variables ``rlonu``, ``rlatu``, ``rlonv``, ``rlatv``. Cell
+   polygons are reconstructed from the coord arrays. Data variables shaped
+   ``(rlatu, rlonv)`` or ``(time, rlatu, rlonv)`` are flattened to the
+   cell-flat layout via :func:`_flatten_dyn3d_field`.
+
+2. CF-convention "bounds" layout (DYNAMICO / ICOLMDZ icosahedral)::
 
        lon(cell)                                ; bounds = "bounds_lon"
        lat(cell)                                ; bounds = "bounds_lat"
@@ -12,16 +18,17 @@ Two grid families are auto-detected:
    Variable names are auto-detected (``lon``/``longitude``/``cell_lon`` etc.).
    Pentagons are detected by duplicate consecutive vertices in the bounds array.
 
-2. LMDZ dyn3d regular lat-lon (Arakawa C-grid) — sniffed by the presence of
-   all four coord variables ``rlonu``, ``rlatu``, ``rlonv``, ``rlatv``. Cell
-   polygons are reconstructed from the coord arrays. Data variables shaped
-   ``(rlatu, rlonv)`` or ``(time, rlatu, rlonv)`` are flattened to the
-   cell-flat layout via :func:`_flatten_dyn3d_field`.
+3. XIOS-interpolated regular lat-lon (the standard ICOLMDZ analysis-output
+   format) — 1-D ``lon`` and ``lat`` cell-center coords with no CF bounds and
+   no dyn3d staggered arrays. Latitude endpoints must be ``±90°``. Data
+   variables shaped ``(lat, lon)`` or ``(time, lat, lon)`` are flattened via
+   :func:`_flatten_xios_field`; 3-D vertical profiles (``presnivs, lat, lon``)
+   are skipped until a level-picker UI lands.
 
 Beyond the grid, :func:`load_grid` also returns metadata for every
 cell-shaped data variable so the GUI can populate a "Color by" dropdown.
 :func:`read_field` fetches a single field's values on demand and handles
-the dyn3d 2-D flatten transparently.
+the dyn3d / XIOS 2-D flatten transparently.
 """
 from __future__ import annotations
 
@@ -98,6 +105,8 @@ def load_grid(
     with Dataset(path) as ds:
         if all(name in ds.variables for name in DYN3D_COORDS):
             return _load_dyn3d_grid(ds)
+        if not _has_cf_bounds(ds):
+            return _load_xios_latlon_grid(ds)
         center_lon_name = _find(ds, CENTER_LON_NAMES)
         clon = np.asarray(ds.variables[center_lon_name][:])
         clat = np.asarray(ds.variables[_find(ds, CENTER_LAT_NAMES)][:])
@@ -234,6 +243,109 @@ def _flatten_dyn3d_field(arr: np.ndarray) -> np.ndarray:
     return out.reshape(-1)
 
 
+def _has_cf_bounds(ds) -> bool:
+    """True if the dataset exposes both a ``bounds_lon`` and ``bounds_lat`` variable."""
+    return (any(b in ds.variables for b in BOUNDS_LON_NAMES)
+            and any(b in ds.variables for b in BOUNDS_LAT_NAMES))
+
+
+def _is_xios_latlon(ds) -> bool:
+    """True if the dataset looks like XIOS-interpolated regular lat-lon.
+
+    Sniffed by the presence of 1-D ``lon`` and ``lat`` coord variables that
+    sit on their own same-named dimension, with no CF bounds and no dyn3d
+    staggered arrays. The dyn3d and bounds checks are assumed to have been
+    done by the caller — this function is the third-and-final detector.
+    """
+    if "lon" not in ds.variables or "lat" not in ds.variables:
+        return False
+    lon = ds.variables["lon"]
+    lat = ds.variables["lat"]
+    return (lon.ndim == 1 and lat.ndim == 1
+            and lon.dimensions == ("lon",) and lat.dimensions == ("lat",))
+
+
+def _load_xios_latlon_grid(
+    ds,
+) -> tuple[np.ndarray, list[list[int]], np.ndarray, dict[str, FieldMeta]]:
+    """Build mesh and collect field metadata from an XIOS regular lat-lon file.
+
+    Reads 1-D ``lon`` and ``lat`` cell-center coords and reconstructs cell
+    polygons via :func:`icoscope.lonlat.build_mesh_from_centers`. Surfaces
+    data variables shaped ``(lat, lon)`` or ``(time, lat, lon)``; 3-D vertical
+    profiles on ``(presnivs, lat, lon)`` and 4-D ``(time, presnivs, lat, lon)``
+    are skipped (need a level-picker UI).
+    """
+    from .lonlat import build_mesh_from_centers
+
+    if not _is_xios_latlon(ds):
+        raise ValueError(
+            "no recognised grid layout: missing dyn3d coord arrays, CF bounds, "
+            "or 1-D lon/lat XIOS coords"
+        )
+    lon = np.asarray(ds.variables["lon"][:], dtype=float)
+    lat = np.asarray(ds.variables["lat"][:], dtype=float)
+    verts, cells, centers, _south_first = build_mesh_from_centers(lon, lat)
+
+    fields: dict[str, FieldMeta] = {}
+    coord_dims = ("lat", "lon")
+    time_dims = ("time", "time_counter")
+    skip_names = {"lon", "lat", "presnivs", "time", "time_counter",
+                  "time_centered", "time_counter_bounds", "time_centered_bounds",
+                  "nav_lon", "nav_lat"}
+    for name, var in ds.variables.items():
+        if name in skip_names:
+            continue
+        dims = var.dimensions
+        if dims[-2:] != coord_dims:
+            continue
+        if len(dims) == 2:
+            time_varying = False
+        elif len(dims) == 3 and dims[0] in time_dims:
+            time_varying = True
+        else:
+            continue
+        fields[name] = {
+            "units": getattr(var, "units", ""),
+            "long_name": getattr(var, "long_name", name),
+            "shape": tuple(var.shape),
+            "time_varying": time_varying,
+            "kind": "xios",
+        }
+
+    return verts, cells, centers, fields
+
+
+def _flatten_xios_field(arr: np.ndarray, south_first: bool) -> np.ndarray:
+    """Flatten an XIOS 2-D ``(lat, lon)`` field to the cell-flat layout.
+
+    The mesh built by :func:`icoscope.lonlat.build_mesh_from_centers` iterates
+    ``j`` north→south (outer) and ``i`` unchanged (inner), matching
+    :func:`icoscope.lonlat.build_mesh_from_arrays`. When the source file
+    stores lat south→north (``south_first=True``), the lat axis is flipped
+    here so the field aligns with the mesh.
+
+    Row mapping (same skip pattern as :func:`_flatten_dyn3d_field`):
+    - mesh row 0 (north polar band) ← field row 0 (north pole scalar)
+    - mesh rows 1..jjm-2 (interior) ← field rows 1..jjm-2
+    - mesh row jjm-1 (south polar band) ← field row nlat-1 (south pole scalar)
+
+    Field row ``jjm-1 = nlat-2`` is skipped: the mesh forces the south polar
+    band's center to the pole, so it must be colored by the south-pole scalar
+    rather than the southernmost interior latitude.
+    """
+    if arr.ndim != 2:
+        raise ValueError(f"expected 2-D field, got shape {arr.shape}")
+    if south_first:
+        arr = arr[::-1, :]
+    nlat, nlon = arr.shape
+    jjm = nlat - 1
+    out = np.empty((jjm, nlon), dtype=arr.dtype)
+    out[: jjm - 1, :] = arr[: jjm - 1, :]
+    out[jjm - 1, :] = arr[nlat - 1, :]
+    return out.reshape(-1)
+
+
 def read_global_attrs(path: str | Path) -> dict[str, str]:
     """Return the NetCDF file's global attributes as a ``{name: str}`` dict.
 
@@ -264,13 +376,17 @@ def read_field(path: str | Path, name: str, time_index: int = 0) -> np.ndarray:
         var = ds.variables[name]
         data = np.asarray(var[:])
         is_dyn3d = all(c in ds.variables for c in DYN3D_COORDS)
+        is_xios = not is_dyn3d and not _has_cf_bounds(ds) and _is_xios_latlon(ds)
+        xios_south_first = bool(is_xios and ds.variables["lat"][0] < ds.variables["lat"][-1])
 
-    # Time slice first if the leading dim looks like time.
-    if data.ndim > 1 and is_dyn3d:
-        # dyn3d: shape (time?, rlatu, rlonv) → slice the time dim if present.
+    if is_dyn3d and data.ndim > 1:
         if data.ndim == 3:
             data = data[time_index]
         return _flatten_dyn3d_field(data)
+    if is_xios and data.ndim > 1:
+        if data.ndim == 3:
+            data = data[time_index]
+        return _flatten_xios_field(data, xios_south_first)
     if data.ndim > 1:
         data = data[time_index]
     return data
