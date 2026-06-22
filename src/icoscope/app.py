@@ -837,6 +837,12 @@ class MainWindow(QMainWindow):
         self.file_path = path
         self._file_state.file_fields = fields
         self._file_state.file_levels = levels
+        # Fresh file: reset selections so _activate_file_view's "preserve
+        # prior choice" path doesn't carry over a field/index from the
+        # previous file that may not exist or may be out-of-range here.
+        self._file_state.color_by = "None"
+        self._file_state.time_index = 0
+        self._file_state.level_index = 0
         self._file_cache = {
             "path": path,
             "verts": verts,
@@ -927,23 +933,30 @@ class MainWindow(QMainWindow):
         # _apply_mesh_change call below rebuilds the scene once).
         meta = c["fields"].get(desired)
         if meta and meta.get("time_varying"):
-            self.panel.file_tab.set_time_steps(meta["shape"][0])
+            n_t = meta["shape"][0]
+            self.panel.file_tab.set_time_steps(n_t)
+            # Clamp the saved index in case the caller is recycling state
+            # across a different field/file (e.g. via _on_open_file).
+            t_idx = min(max(self._file_state.time_index, 0), n_t - 1)
+            self._file_state.time_index = t_idx
             slider = self.panel.file_tab.display.time_slider
             slider.blockSignals(True)
-            slider.setValue(self._file_state.time_index)
+            slider.setValue(t_idx)
             slider.blockSignals(False)
-            self.panel.file_tab.set_time_label(
-                self._file_state.time_index, meta["shape"][0])
+            self.panel.file_tab.set_time_label(t_idx, n_t)
         else:
             self.panel.file_tab.set_time_steps(0)
             self._file_state.time_index = 0
         if meta and meta.get("n_levels", 0) > 1 and self._file_state.file_levels is not None:
+            n_l = meta["n_levels"]
             self.panel.file_tab.set_levels(self._file_state.file_levels)
+            l_idx = min(max(self._file_state.level_index, 0), n_l - 1)
+            self._file_state.level_index = l_idx
             slider = self.panel.file_tab.display.level_slider
             slider.blockSignals(True)
-            slider.setValue(self._file_state.level_index)
+            slider.setValue(l_idx)
             slider.blockSignals(False)
-            self.panel.file_tab.display._update_level_label(self._file_state.level_index)
+            self.panel.file_tab.display._update_level_label(l_idx)
         else:
             self.panel.file_tab.set_levels(None)
             self._file_state.level_index = 0
