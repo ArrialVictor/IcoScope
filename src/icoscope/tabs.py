@@ -577,7 +577,15 @@ class FileTab(QWidget):
             self.updateGeometry()
             return
 
-        self.file_name_label.setText(basename(path))
+        # Qt word-wrap only breaks on whitespace + hyphens, so a long run of
+        # underscore-joined tokens (typical of ICOLMDZ histday filenames) stays
+        # as one unbreakable word. Inject zero-width spaces after underscores
+        # and dots so the wrap algorithm has somewhere to break. Tooltip keeps
+        # the verbatim path.
+        name = basename(path)
+        zwsp = "\u200b"
+        wrapped = name.replace("_", "_" + zwsp).replace(".", "." + zwsp)
+        self.file_name_label.setText(wrapped)
         self.file_name_label.setToolTip(path)
         self.file_name_label.setVisible(True)
 
