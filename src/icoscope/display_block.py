@@ -302,16 +302,12 @@ class _DisplayBlock(QWidget):
         self.grat_btn.set_color(hex_str)
 
     def set_time_steps(self, n_steps: int) -> None:
-        """Configure the time slider for a time-varying field, or hide it.
-
-        The Speed row stays hidden by default — it only appears while playback
-        is active (see :meth:`_on_play_toggled`). Saves a row of vertical space
-        for the common "scrub time manually" case.
-        """
+        """Configure the time slider for a time-varying field, or hide it."""
         if not self.with_time:
             return
         if n_steps and n_steps > 1:
             self.time_row.setVisible(True)
+            self.speed_row.setVisible(True)
             self.time_slider.blockSignals(True)
             self.time_slider.setRange(0, n_steps - 1)
             self.time_slider.setValue(0)
@@ -320,8 +316,8 @@ class _DisplayBlock(QWidget):
             self.play_btn.setChecked(False)
         else:
             self.time_row.setVisible(False)
+            self.speed_row.setVisible(False)
             self.play_btn.setChecked(False)
-        self.speed_row.setVisible(False)
 
     def set_time_label(self, idx: int, total: int) -> None:
         """Update the ``i/N`` label next to the time slider."""
@@ -330,9 +326,6 @@ class _DisplayBlock(QWidget):
 
     def _on_play_toggled(self, on):
         self.play_btn.setText("⏸" if on else "▶")
-        # Speed row only appears while playback is active — it's irrelevant
-        # when the user is manually scrubbing the time slider.
-        self.speed_row.setVisible(on)
         self.play_toggled.emit(on)
 
     def set_levels(self, levels_pa) -> None:
