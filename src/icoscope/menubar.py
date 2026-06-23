@@ -9,16 +9,25 @@ theme-action mapping.
 """
 from collections.abc import Callable
 
+from qtpy.QtGui import QKeySequence
 from qtpy.QtWidgets import QAction, QMainWindow, QMessageBox
 
 from .themes import THEMES
+
+# Pane layout submenu entries: label, n_panes, keyboard shortcut.
+PANE_LAYOUTS = (
+    ("Single", 1, "Ctrl+1"),
+    ("1 x 2", 2, "Ctrl+2"),
+    ("2 x 2", 4, "Ctrl+4"),
+)
 
 
 def build_menubar(
     window: QMainWindow,
     current_theme: str,
     on_theme: Callable[[str], None],
-) -> dict[str, QAction]:
+    on_pane_layout: Callable[[int], None] | None = None,
+) -> tuple[dict[str, QAction], dict[int, QAction]]:
     """Build the ``View`` and ``Help`` menus on ``window``.
 
     Parameters
@@ -31,12 +40,17 @@ def build_menubar(
     on_theme
         Callback invoked when the user picks a theme; receives the theme
         name as its sole argument.
+    on_pane_layout
+        Callback invoked when the user picks a pane layout; receives the
+        target number of panes (1, 2, or 4). ``None`` hides the submenu
+        (useful for tabs that always render single-pane).
 
     Returns
     -------
-    dict[str, QAction]
-        Theme-name → ``QAction`` mapping so the caller can update
-        checkmarks when the theme changes from outside the menubar.
+    theme_actions, layout_actions
+        Theme-name → ``QAction`` and n_panes → ``QAction`` mappings so
+        the caller can update checkmarks when the active theme or layout
+        changes from outside the menubar.
     """
     mb = window.menuBar()
 
@@ -53,6 +67,25 @@ def build_menubar(
         theme_menu.addAction(act)
         theme_actions[name] = act
 
+    # View → Pane layout → Single / 1×2 / 2×2. Only meaningful on the File
+    # tab; the main window enables/disables the submenu based on the active
+    # tab. Building it unconditionally keeps the menu structure stable —
+    # the on_pane_layout=None code path just leaves it disabled.
+    layout_actions: dict[int, QAction] = {}
+    layout_menu = view_menu.addMenu("Pane layout")
+    for label, n_panes, shortcut in PANE_LAYOUTS:
+        act = QAction(label, window, checkable=True)
+        act.setChecked(n_panes == 1)
+        act.setShortcut(QKeySequence(shortcut))
+        if on_pane_layout is not None:
+            act.triggered.connect(
+                lambda _checked, n=n_panes: on_pane_layout(n)
+            )
+        layout_menu.addAction(act)
+        layout_actions[n_panes] = act
+    if on_pane_layout is None:
+        layout_menu.setEnabled(False)
+
     help_menu = mb.addMenu("&Help")
 
     keys_act = QAction("Keyboard && mouse", window)
@@ -68,13 +101,19 @@ def build_menubar(
     about_act.triggered.connect(lambda: _show_about(window))
     help_menu.addAction(about_act)
 
-    return theme_actions
+    return theme_actions, layout_actions
 
 
 def sync_theme_checkmarks(theme_actions: dict[str, QAction], name: str) -> None:
     """Tick the entry matching ``name`` in the Theme submenu; untick others."""
     for n, act in theme_actions.items():
         act.setChecked(n == name)
+
+
+def sync_layout_checkmarks(layout_actions: dict[int, QAction], n_panes: int) -> None:
+    """Tick the Pane-layout submenu entry matching ``n_panes``; untick others."""
+    for n, act in layout_actions.items():
+        act.setChecked(n == n_panes)
 
 
 def _show_shortcuts(parent: QMainWindow) -> None:

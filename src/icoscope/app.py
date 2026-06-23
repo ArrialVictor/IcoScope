@@ -219,8 +219,10 @@ class MainWindow(QMainWindow):
         self.splitter.setSizes([1000, ControlPanel.DEFAULT_WIDTH])
         self.setCentralWidget(self.splitter)
 
-        self._theme_actions = _menubar.build_menubar(
-            self, self.theme_name, self._on_theme)
+        self._theme_actions, self._layout_actions = _menubar.build_menubar(
+            self, self.theme_name, self._on_theme,
+            on_pane_layout=self._on_pane_layout,
+        )
         self._build_lonlat_widget()
         self.statusBar().showMessage("ready")
 
@@ -669,6 +671,21 @@ class MainWindow(QMainWindow):
         self.plotter.render()
 
     # ── slots ─────────────────────────────────────
+    def _on_pane_layout(self, n_panes: int) -> None:
+        """User picked View → Pane layout → Single / 1×2 / 2×2.
+
+        Reshuffles the :class:`PaneContainer`. Stage 3 of the multi-pane
+        scaffold (this commit): all visible panes still share the active
+        tab's single scene render. Stage 4 binds each pane to its own
+        :class:`PaneState`.
+        """
+        self._pane_container.set_layout(n_panes)
+        _menubar.sync_layout_checkmarks(
+            getattr(self, "_layout_actions", {}), n_panes)
+        # self.plotter aliases pane 0's QtInteractor; nothing else moved
+        # so a re-render through the existing scene-build path is enough.
+        self._build_scene()
+
     def _on_theme(self, name):
         self.theme_name = name
         # Keep the menu's checkmark in sync (mutually-exclusive).
