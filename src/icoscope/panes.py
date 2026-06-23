@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from pyvistaqt import QtInteractor
 from qtpy.QtCore import QEvent, Qt, Signal
-from qtpy.QtWidgets import QFrame, QSplitter, QVBoxLayout, QWidget
+from qtpy.QtWidgets import QFrame, QLabel, QSplitter, QVBoxLayout, QWidget
 
 
 class Pane(QFrame):
@@ -51,11 +51,33 @@ class Pane(QFrame):
         # still gets the event so the camera gesture works as before).
         self.plotter.interactor.installEventFilter(self)
 
+        # Banner overlay (bottom-left): surfaces "Showing <nearest> (cursor at
+        # <cursor>)" when the master time cursor falls outside this pane's
+        # field's axis range. Hidden by default. Re-parented onto the
+        # QtInteractor so it floats over the rendered sphere instead of
+        # being squashed under it by the layout.
+        self.banner = QLabel(self.plotter.interactor)
+        self.banner.setStyleSheet(
+            "QLabel { background: rgba(0, 0, 0, 0.55); color: white;"
+            " padding: 3px 8px; border-radius: 3px; font-size: 11px; }"
+        )
+        self.banner.setVisible(False)
+        self.banner.move(8, 8)
+
     def set_selected(self, selected: bool) -> None:
         """Toggle the selection border."""
         self.setStyleSheet(
             self._STYLE_SELECTED if selected else self._STYLE_UNSELECTED
         )
+
+    def set_banner(self, text: str | None) -> None:
+        """Show ``text`` in the top-left overlay, or hide the banner when ``None``."""
+        if not text:
+            self.banner.setVisible(False)
+            return
+        self.banner.setText(text)
+        self.banner.adjustSize()
+        self.banner.setVisible(True)
 
     def mousePressEvent(self, ev):
         """Forward the click to the parent then announce who was clicked."""
