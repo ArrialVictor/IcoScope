@@ -1379,6 +1379,23 @@ class MainWindow(QMainWindow):
                 # settings are ignored in this state since there's no
                 # geographic data to overlay onto.
                 self._render_empty_sphere()
+        # Multi-pane only applies on the File tab; collapse to Single layout
+        # and disable the Pane-layout menu when switching elsewhere. The
+        # selection model also resets — Ico/LonLat have nothing to select.
+        is_file_tab = idx == Tab.FILE
+        for action in getattr(self, "_layout_actions", {}).values():
+            action.setEnabled(is_file_tab)
+        if not is_file_tab:
+            if self._pane_container.n_visible != 1:
+                self._pane_container.set_layout(1)
+                _menubar.sync_layout_checkmarks(
+                    getattr(self, "_layout_actions", {}), 1)
+            self._select_pane(None)
+        elif self._selected_pane is None:
+            # Entering the File tab: auto-select pane 0 so the user has a
+            # coherent "Pane 1 settings" view by default (matches the
+            # design doc's "default on file open" behaviour).
+            self._select_pane(0)
         # Per-tab colour overrides may differ → refresh swatches.
         self._sync_color_buttons()
         # Auto-rotate is per-tab state but the timer is window-level — sync
