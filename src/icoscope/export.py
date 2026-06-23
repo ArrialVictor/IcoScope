@@ -196,7 +196,7 @@ def _planned_files(base: str, n_panes: int, choice) -> list[str]:
     return out
 
 
-def save_export(window: "QMainWindow", pane_container,
+def save_export(window: QMainWindow, pane_container,
                 *, defaults: ExportDefaults) -> ExportDefaults:
     """Run the unified Export dialog and write whatever the user selected.
 
