@@ -932,8 +932,11 @@ class MainWindow(QMainWindow):
         # _on_time_changed / _on_level_changed; the subsequent
         # _apply_mesh_change call below rebuilds the scene once).
         meta = c["fields"].get(desired)
-        if meta and meta.get("time_varying"):
-            n_t = meta["shape"][0]
+        # Guard against a degenerate empty-time dim (unlimited dim with zero
+        # records written): meta says time_varying=True but shape[0]==0 would
+        # produce slider.setValue(-1) and a nonsense label.
+        n_t = meta["shape"][0] if (meta and meta.get("time_varying")) else 0
+        if n_t > 1:
             self.panel.file_tab.set_time_steps(n_t)
             # Clamp the saved index in case the caller is recycling state
             # across a different field/file (e.g. via _on_open_file).
@@ -956,7 +959,7 @@ class MainWindow(QMainWindow):
             slider.blockSignals(True)
             slider.setValue(l_idx)
             slider.blockSignals(False)
-            self.panel.file_tab.display._update_level_label(l_idx)
+            self.panel.file_tab.set_level_label(l_idx)
         else:
             self.panel.file_tab.set_levels(None)
             self._file_state.level_index = 0

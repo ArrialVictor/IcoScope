@@ -46,7 +46,11 @@ FieldMeta = dict[str, Any]
 # dim). dyn3d / XIOS files additionally set "kind" so callers can branch.
 
 LEVEL_DIM = "presnivs"
-TIME_DIMS = ("time", "time_counter")
+# Time dim is named ``time`` in dyn3d, ``time_counter`` in XIOS, ``Time`` in
+# WRF/MPAS-style files, plus a few rarer variants seen in CF outputs. read_field
+# slices the leading dim only if its name is in this set, and load_grid mirrors
+# the same set when deciding ``time_varying`` — keeping the two sides aligned.
+TIME_DIMS = ("time", "time_counter", "Time", "t", "time_instant", "time_centered")
 
 CENTER_LON_NAMES = ("lon", "longitude", "cell_lon", "clon")
 CENTER_LAT_NAMES = ("lat", "latitude", "cell_lat", "clat")
@@ -121,20 +125,24 @@ def load_grid(
         blat = np.asarray(ds.variables[_find(ds, BOUNDS_LAT_NAMES)][:])
 
         cell_dim = ds.variables[center_lon_name].dimensions[0]
+        n_levels_avail = (
+            len(ds.dimensions[LEVEL_DIM]) if LEVEL_DIM in ds.dimensions else 0
+        )
 
         fields = {}
         for name, var in ds.variables.items():
             if name in EXCLUDED:
                 continue
-            if cell_dim not in var.dimensions:
+            meta = _classify_var(var.dimensions, (cell_dim,), n_levels_avail)
+            if meta is None:
                 continue
-            time_varying = len(var.dimensions) > 1 and var.dimensions[0] != cell_dim
+            time_varying, n_levels = meta
             fields[name] = {
                 "units": getattr(var, "units", ""),
                 "long_name": getattr(var, "long_name", name),
                 "shape": tuple(var.shape),
                 "time_varying": time_varying,
-                "n_levels": 0,   # icosahedral path: vertical fields not yet supported
+                "n_levels": n_levels,
             }
 
     n_cells, n_max = blon.shape
@@ -215,18 +223,20 @@ def _load_dyn3d_grid(
 
 def _classify_var(
     dims: tuple[str, ...],
-    horizontal: tuple[str, str],
+    horizontal: tuple[str, ...],
     n_levels_avail: int,
 ) -> tuple[bool, int] | None:
     """Return ``(time_varying, n_levels)`` for a variable, or ``None`` to skip.
 
     Accepts variables whose dims end in ``horizontal`` (e.g. ``(rlatu, rlonv)``
-    for dyn3d, ``(lat, lon)`` for XIOS) and whose leading dims are some prefix
-    of ``[time, presnivs]``. Other layouts are skipped.
+    for dyn3d, ``(lat, lon)`` for XIOS, or just ``(cell,)`` for the icosahedral
+    CF-bounds path) and whose leading dims are some prefix of ``[time, presnivs]``.
+    Other layouts are skipped.
     """
-    if dims[-2:] != horizontal:
+    h_len = len(horizontal)
+    if dims[-h_len:] != horizontal:
         return None
-    leading = dims[:-2]
+    leading = dims[:-h_len]
     if len(leading) == 0:
         return False, 0
     if len(leading) == 1 and leading[0] in TIME_DIMS:
@@ -417,7 +427,16 @@ def read_field(
             idx.append(level_index)
             consumed += 1
         idx.extend([slice(None)] * (len(dims) - consumed))
-        data = np.asarray(var[tuple(idx)])
+        # netCDF4 returns a MaskedArray whenever _FillValue is set; np.asarray
+        # would silently drop the mask, letting the sentinel (e.g. 9.97e36)
+        # leak into the rendered scalars and collapse the colormap range.
+        # Replace masked values with NaN so the nan-aware downstream code
+        # (np.nanmax in _clim, PyVista's cell_data) skips them.
+        raw = var[tuple(idx)]
+        if np.ma.isMaskedArray(raw):
+            data = np.ma.filled(raw.astype(float, copy=False), np.nan)
+        else:
+            data = np.asarray(raw)
 
         is_dyn3d = all(c in ds.variables for c in DYN3D_COORDS)
         is_xios = not is_dyn3d and not _has_cf_bounds(ds) and _is_xios_latlon(ds)
@@ -433,15 +452,20 @@ def read_field(
 def read_levels(path: str | Path) -> np.ndarray | None:
     """Return the ``presnivs`` axis values (Pa) if present, else ``None``.
 
-    Used by the GUI to label the vertical-level slider. Returns ``None`` for
-    files with no vertical dim (the slider stays hidden).
+    Used by the GUI to label the vertical-level slider. If only the dimension
+    exists (no coord variable — possible when a file has been subsetted with
+    ``ncks``/``cdo`` and the coord var was dropped), returns ``np.arange(N)``
+    so the slider still works, labelled by integer index instead of pressure.
+    Returns ``None`` only when there is no vertical dim at all.
     """
     from netCDF4 import Dataset
 
     with Dataset(path) as ds:
-        if LEVEL_DIM not in ds.variables:
-            return None
-        return np.asarray(ds.variables[LEVEL_DIM][:], dtype=float)
+        if LEVEL_DIM in ds.variables:
+            return np.asarray(ds.variables[LEVEL_DIM][:], dtype=float)
+        if LEVEL_DIM in ds.dimensions:
+            return np.arange(len(ds.dimensions[LEVEL_DIM]), dtype=float)
+        return None
 
 
 def describe(path: str | Path) -> None:

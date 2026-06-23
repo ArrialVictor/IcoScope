@@ -552,6 +552,10 @@ class FileTab(QWidget):
         """Forward to the inner display block."""
         self.display.set_levels(levels_pa)
 
+    def set_level_label(self, idx: int) -> None:
+        """Forward to the inner display block."""
+        self.display.set_level_label(idx)
+
     # ── file controls ────────────────────────────────────────────────────
 
     def set_file_loaded(self, loaded: bool):

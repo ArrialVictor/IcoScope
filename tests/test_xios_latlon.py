@@ -264,3 +264,58 @@ def test_read_levels_none_when_absent():
         path = Path(tmp) / "x.nc"
         _make_xios_nc(path)
         assert read_levels(path) is None
+
+
+def test_read_field_masked_array_becomes_nan():
+    """_FillValue should be replaced by NaN, not leak through as the sentinel."""
+    fv = np.float32(9.96921e36)
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "x.nc"
+        nlon, nlat = 8, 6
+        lon = np.linspace(0.0, 360.0, nlon, endpoint=False)
+        lat = np.linspace(-90.0, 90.0, nlat)
+        with Dataset(path, "w", format="NETCDF4") as ds:
+            ds.createDimension("lon", nlon)
+            ds.createDimension("lat", nlat)
+            ds.createVariable("lon", "f8", ("lon",))[:] = lon
+            ds.createVariable("lat", "f8", ("lat",))[:] = lat
+            v = ds.createVariable("slp", "f4", ("lat", "lon"), fill_value=fv)
+            arr = np.full((nlat, nlon), 100000.0, dtype=np.float32)
+            arr[2, 3] = fv  # masked cell
+            v[:] = arr
+        out = read_field(path, "slp")
+        assert not np.any(out == fv), "sentinel leaked through asarray"
+        assert np.any(np.isnan(out)), "masked cell should be NaN"
+
+
+def test_read_levels_falls_back_to_indices_without_coord_var():
+    """File with presnivs dim but no presnivs coord var: return integer indices."""
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "x.nc"
+        _make_xios_nc(path)  # no presnivs at all
+        with Dataset(path, "a") as ds:
+            ds.createDimension("presnivs", 5)
+            # Deliberately do NOT create a presnivs variable
+        levels = read_levels(path)
+        assert levels is not None
+        np.testing.assert_array_equal(levels, np.arange(5, dtype=float))
+
+
+def test_classify_var_accepts_one_dim_horizontal():
+    """_classify_var should work with 1-D horizontal (e.g. icosahedral (cell,))."""
+    from icoscope.loader import _classify_var
+    # Static field on cell
+    assert _classify_var(("cell",), ("cell",), 0) == (False, 0)
+    # Time-varying on cell
+    assert _classify_var(("time", "cell"), ("cell",), 0) == (True, 0)
+    # Vertical on cell
+    assert _classify_var(("presnivs", "cell"), ("cell",), 5) == (False, 5)
+    # Time + vertical on cell
+    assert _classify_var(("time", "presnivs", "cell"), ("cell",), 5) == (True, 5)
+
+
+def test_classify_var_accepts_capital_time():
+    """TIME_DIMS now includes 'Time'/'t' so WRF-style files aren't dropped."""
+    from icoscope.loader import _classify_var
+    assert _classify_var(("Time", "lat", "lon"), ("lat", "lon"), 0) == (True, 0)
+    assert _classify_var(("t", "lat", "lon"), ("lat", "lon"), 0) == (True, 0)
