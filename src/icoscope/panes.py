@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from pyvistaqt import QtInteractor
 from qtpy.QtCore import QEvent, Qt, Signal
-from qtpy.QtWidgets import QFrame, QLabel, QSplitter, QVBoxLayout, QWidget
+from qtpy.QtWidgets import QFrame, QSplitter, QVBoxLayout, QWidget
 
 
 class Pane(QFrame):
@@ -50,19 +50,13 @@ class Pane(QFrame):
         # filter so we also see those clicks (without consuming them — VTK
         # still gets the event so the camera gesture works as before).
         self.plotter.interactor.installEventFilter(self)
-
-        # Banner overlay (bottom-left): surfaces "Showing <nearest> (cursor at
-        # <cursor>)" when the master time cursor falls outside this pane's
-        # field's axis range. Hidden by default. Re-parented onto the
-        # QtInteractor so it floats over the rendered sphere instead of
-        # being squashed under it by the layout.
-        self.banner = QLabel(self.plotter.interactor)
-        self.banner.setStyleSheet(
-            "QLabel { background: rgba(0, 0, 0, 0.55); color: white;"
-            " padding: 3px 8px; border-radius: 3px; font-size: 11px; }"
-        )
-        self.banner.setVisible(False)
-        self.banner.move(8, 8)
+        # Banner text actor — surfaces "Showing <nearest> (cursor at <cursor>)"
+        # when the master time cursor falls outside this pane's field's axis
+        # range. Drawn as a VTK 2D text actor (rendered inside the scene), not
+        # a Qt QLabel: QLabels parented to QtInteractor don't reliably
+        # composite over the native VTK render on macOS. ``None`` means no
+        # banner is currently shown.
+        self._banner_text: str | None = None
 
     def set_selected(self, selected: bool) -> None:
         """Toggle the selection border."""
@@ -71,13 +65,37 @@ class Pane(QFrame):
         )
 
     def set_banner(self, text: str | None) -> None:
-        """Show ``text`` in the top-left overlay, or hide the banner when ``None``."""
-        if not text:
-            self.banner.setVisible(False)
+        """Show ``text`` in the bottom-left overlay, or hide the banner.
+
+        Implemented as a VTK 2D text actor (``plotter.add_text`` /
+        ``remove_actor``) so it reliably composites over the rendered
+        sphere on every platform. Idempotent: re-passing the same text
+        is a no-op (avoids actor-churn flicker during fast scrubs).
+        """
+        if text == self._banner_text:
             return
-        self.banner.setText(text)
-        self.banner.adjustSize()
-        self.banner.setVisible(True)
+        self.plotter.remove_actor("banner", reset_camera=False, render=False)
+        self._banner_text = text
+        if text:
+            # Top-left, just inside the pane. PyVista's ``position`` accepts
+            # either a named slot ("upper_left", etc.) or pixel coords; named
+            # slot keeps the banner anchored if the pane resizes.
+            self.plotter.add_text(
+                text, name="banner", position="upper_left",
+                font_size=10, color="white",
+                shadow=True,
+            )
+        self.plotter.render()
+
+    @property
+    def banner_visible(self) -> bool:
+        """Whether a banner is currently displayed (for tests)."""
+        return self._banner_text is not None
+
+    @property
+    def banner_text(self) -> str:
+        """Current banner text (empty string when hidden), for tests."""
+        return self._banner_text or ""
 
     def mousePressEvent(self, ev):
         """Forward the click to the parent then announce who was clicked."""

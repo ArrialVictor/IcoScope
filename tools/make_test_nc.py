@@ -96,13 +96,16 @@ def main():
     # (``time_counter`` instead of ``time``). Lets the multi-pane cursor logic
     # be exercised — daily vs monthly mismatch is the realistic ICOLMDZ-ISO
     # scenario (histday vs histmth output files merged at runtime).
+    # The pattern is a longitudinal hot band that drifts eastward over the
+    # 60-day window so the moment-to-moment changes are unambiguous to the
+    # eye (an earlier flat-ish cosine version was almost invisible).
     n_days = 60
     daily = np.zeros((n_days, n_cells))
     for d in range(n_days):
         day_phase = 2 * np.pi * d / n_days
         daily[d] = (290.0
-                    + 20.0 * np.cos(lat_rad)
-                    + 5.0  * np.cos(day_phase) * np.sin(lat_rad))
+                    + 25.0 * np.cos(lat_rad)
+                    + 20.0 * np.sin(lon_rad - day_phase))
 
     # write NetCDF
     print(f"Writing {OUTPATH}…")

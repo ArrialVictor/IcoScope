@@ -41,7 +41,7 @@ def test_cursor_propagates_to_pane_on_different_axis(make_main_window):
     # Cursor at day 30 is still inside the daily axis (0..59) so the
     # banner should be hidden on pane 1.
     pane1_widget = win._pane_container.pane(1)
-    assert not pane1_widget.banner.isVisible()
+    assert not pane1_widget.banner_visible
 
 
 def test_cursor_out_of_range_shows_banner(make_main_window):
@@ -61,9 +61,9 @@ def test_cursor_out_of_range_shows_banner(make_main_window):
     # Pane 1's daily axis is clamped to its last sample.
     assert win.state.panes[1].time_index == 59
     pane1_widget = win._pane_container.pane(1)
-    assert pane1_widget.banner.isVisible(), \
+    assert pane1_widget.banner_visible, \
         "out-of-range cursor should surface the banner"
-    text = pane1_widget.banner.text()
+    text = pane1_widget.banner_text
     assert "Showing" in text and "cursor at" in text, \
         f"unexpected banner text: {text!r}"
 
@@ -88,7 +88,7 @@ def test_cursor_resolves_on_color_by_change(make_main_window):
     win._on_color_by("tas_daily")
     QCoreApplication.processEvents()
     assert win.state.panes[1].time_index == 59
-    assert win._pane_container.pane(1).banner.isVisible()
+    assert win._pane_container.pane(1).banner_visible
 
 
 def test_file_unload_clears_cursor_and_banners(make_main_window):
@@ -102,9 +102,9 @@ def test_file_unload_clears_cursor_and_banners(make_main_window):
     QCoreApplication.processEvents()
     win._on_time_changed(5)            # out-of-range for pane 1
     QCoreApplication.processEvents()
-    assert win._pane_container.pane(1).banner.isVisible()
+    assert win._pane_container.pane(1).banner_visible
 
     win._on_close_file()
     QCoreApplication.processEvents()
     assert win._file_state.time_cursor is None
-    assert not win._pane_container.pane(1).banner.isVisible()
+    assert not win._pane_container.pane(1).banner_visible
