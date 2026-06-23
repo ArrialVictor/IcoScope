@@ -524,8 +524,12 @@ class MainWindow(QMainWindow):
         # PyVista keeps the existing scalar-bar actor across add_mesh calls
         # and only honours scalar_bar_args on first creation. Drop it so
         # the new title / label / colour / format actually takes effect.
+        # Suppress everything: PyVista's remove_scalar_bar raises various
+        # exceptions when there's no bar (KeyError, IndexError, or
+        # StopIteration depending on version) and the "nothing to remove"
+        # case is benign — first call on a fresh plotter, mostly.
         import contextlib
-        with contextlib.suppress(KeyError, IndexError):
+        with contextlib.suppress(KeyError, IndexError, StopIteration):
             plotter.remove_scalar_bar()
         theme = THEMES[self.theme_name]
         plotter.set_background(theme["bg"])
