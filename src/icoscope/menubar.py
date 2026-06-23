@@ -27,6 +27,7 @@ def build_menubar(
     current_theme: str,
     on_theme: Callable[[str], None],
     on_pane_layout: Callable[[int], None] | None = None,
+    on_reset_cameras: Callable[[], None] | None = None,
 ) -> tuple[dict[str, QAction], dict[int, QAction]]:
     """Build the ``View`` and ``Help`` menus on ``window``.
 
@@ -86,6 +87,16 @@ def build_menubar(
     if on_pane_layout is None:
         layout_menu.setEnabled(False)
 
+    # View → Reset cameras. Resets the camera of every visible pane to
+    # frame the sphere — useful after zooming/panning across multiple
+    # panes loses the original framing.
+    if on_reset_cameras is not None:
+        view_menu.addSeparator()
+        reset_act = QAction("Reset cameras", window)
+        reset_act.setShortcut(QKeySequence("Ctrl+R"))
+        reset_act.triggered.connect(lambda: on_reset_cameras())
+        view_menu.addAction(reset_act)
+
     help_menu = mb.addMenu("&Help")
 
     keys_act = QAction("Keyboard && mouse", window)
@@ -127,7 +138,8 @@ def _show_shortcuts(parent: QMainWindow) -> None:
         "Left click — pick a cell<br>"
         "<br><b>Keys</b><br>"
         "Esc — clear selection, stop auto-rotate<br>"
-        "r — reset camera<br>"
+        "r — reset focused camera (VTK shortcut)<br>"
+        "Ctrl/Cmd + R — reset every visible pane's camera<br>"
         "f — focus on cursor<br>"
         "w / s — wireframe / surface<br>"
         "q — quit<br>"

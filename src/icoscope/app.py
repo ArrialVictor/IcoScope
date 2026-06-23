@@ -235,6 +235,7 @@ class MainWindow(QMainWindow):
         self._theme_actions, self._layout_actions = _menubar.build_menubar(
             self, self.theme_name, self._on_theme,
             on_pane_layout=self._on_pane_layout,
+            on_reset_cameras=self._on_reset_cameras,
         )
         self._build_lonlat_widget()
         self.statusBar().showMessage("ready")
@@ -577,9 +578,14 @@ class MainWindow(QMainWindow):
             self.state.spin_on = False
             self.playback.stop_spin()
             # Uncheck on whichever tab's spin checkbox is currently checked.
+            # The File tab's spin_cb lives on display_global (Auto-rotate is a
+            # tab-shared setting and only the global block in mode='pane' or
+            # 'global' has the checkbox); Ico / LonLat use the combined block
+            # where the checkbox is on `display`.
             for tab in (self.panel.ico_tab, self.panel.lonlat_tab, self.panel.file_tab):
-                cb = tab.display.spin_cb
-                if cb.isChecked():
+                source = getattr(tab, "display_global", None) or tab.display
+                cb = getattr(source, "spin_cb", None)
+                if cb is not None and cb.isChecked():
                     cb.blockSignals(True)
                     cb.setChecked(False)
                     cb.blockSignals(False)
@@ -771,6 +777,19 @@ class MainWindow(QMainWindow):
         self.plotter.render()
 
     # ── slots ─────────────────────────────────────
+    def _on_reset_cameras(self) -> None:
+        """Reset every visible pane's camera to frame the sphere.
+
+        Useful after zooming/panning in multiple panes — quick "back to a
+        clean view" without having to know VTK's built-in 'r' shortcut.
+        Also useful when a newly-revealed pane (after a layout switch)
+        doesn't end up at the expected default zoom for some reason.
+        """
+        for i in range(self._pane_container.n_visible):
+            plotter = self._pane_container.pane(i).plotter
+            plotter.reset_camera()
+            plotter.render()
+
     def _on_pane_clicked(self, idx: int) -> None:
         """User left-clicked pane ``idx``. Promote it to the selected pane.
 
