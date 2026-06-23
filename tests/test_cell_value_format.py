@@ -1,9 +1,8 @@
 """Cell-value formatting helper (status-bar display)."""
 import numpy as np
 
-from icoscope.app import MainWindow
-
-_fmt = MainWindow._format_cell_value
+from icoscope.formatters import format_cell_value as _fmt
+from icoscope.formatters import pretty_units
 
 
 def test_float_typical_range_4_sig_figs():
@@ -55,3 +54,47 @@ def test_full_precision_in_tooltip():
     _, full = _fmt(val, "K")
     # Tooltip should carry enough digits to be useful for copy-paste
     assert full.startswith("1.2345678901234")
+
+
+def test_pretty_units_digit_after_letter_becomes_superscript():
+    assert pretty_units("m2") == "m²"
+    assert pretty_units("s2") == "s²"
+    assert pretty_units("m2/s2") == "m²/s²"
+    assert pretty_units("W/m2") == "W/m²"
+
+
+def test_pretty_units_middle_dot_for_multiplication():
+    assert pretty_units("kg/(s*m2)") == "kg/(s·m²)"
+
+
+def test_pretty_units_negative_exponent():
+    # CF-style "kg m-2 s-1" → "kg m⁻²·s⁻¹"-ish; the regex is conservative,
+    # exact output depends on separators. Verify the superscript transform
+    # itself works on negatives.
+    assert pretty_units("s-1") == "s⁻¹"
+    assert pretty_units("m-2") == "m⁻²"
+
+
+def test_pretty_units_degrees_compass():
+    assert pretty_units("degrees_north") == "°N"
+    assert pretty_units("degrees_east") == "°E"
+    assert pretty_units("degrees_C") == "°C"
+    assert pretty_units("degrees") == "°"
+
+
+def test_pretty_units_dimensionless():
+    assert pretty_units("") == ""
+    assert pretty_units("-") == ""
+    assert pretty_units("1") == ""
+    assert pretty_units(None) == ""
+
+
+def test_pretty_units_leaves_simple_units_alone():
+    assert pretty_units("K") == "K"
+    assert pretty_units("Pa") == "Pa"
+    assert pretty_units("kg/kg") == "kg/kg"   # no digits-after-letters
+
+
+def test_format_cell_value_uses_pretty_units():
+    short, _ = _fmt(287.4, "m2/s2")
+    assert "m²/s²" in short

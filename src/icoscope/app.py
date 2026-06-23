@@ -484,28 +484,12 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _format_cell_value(value, units: str) -> tuple[str, str]:
-        """Return (short, tooltip) text for a cell value with units.
+        """Forward to :func:`icoscope.formatters.format_cell_value`.
 
-        Short text uses 4 significant digits for typical floats and falls
-        back to scientific notation for very small/large magnitudes; integer
-        scalars are shown as-is. Tooltip carries the full-precision value.
+        Kept as a method so existing call sites in this module stay short.
         """
-        if value is None or (isinstance(value, float) and np.isnan(value)):
-            return "no data", "no data at this cell"
-        suffix = f" {units}" if units else ""
-        v = np.asarray(value)
-        if v.dtype.kind in "iu":
-            text = f"{int(v)}{suffix}"
-            return f"Value: {text}", text
-        # Floats: 4 sig figs by default; scientific notation for extremes.
-        fv = float(v)
-        if fv == 0.0:
-            short = "0"
-        elif abs(fv) >= 1e4 or abs(fv) < 1e-3:
-            short = f"{fv:.3e}"
-        else:
-            short = f"{fv:.4g}"
-        return f"Value: {short}{suffix}", f"{fv!r}{suffix}"
+        from .formatters import format_cell_value
+        return format_cell_value(value, units)
 
     def _set_cell_value(self, cell_idx, lon=None, lat=None):
         """Update the status-bar value label for the picked cell.
