@@ -1,9 +1,10 @@
 """Auto-rotate spin timer + time-slider playback for the main window.
 
 Both timers live here; the main window's slots delegate. The spin timer
-rotates the camera around the global up vector; the play timer advances
-the File-tab time slider, which re-fires the regular ``_on_time_changed``
-path so there's no duplicate scalar-refresh logic.
+rotates every visible pane's camera around its own up vector (kept in
+lockstep so multi-pane comparison stays aligned); the play timer
+advances the File-tab time slider, which re-fires the regular
+``_on_time_changed`` path so there's no duplicate scalar-refresh logic.
 """
 import numpy as np
 from qtpy.QtCore import QTimer
@@ -15,10 +16,13 @@ class Playback:
     Parameters
     ----------
     window
-        The main window. Used for parenting the timers and for accessing
-        the File-tab time slider during playback.
+        The main window. Used for parenting the timers, for iterating
+        visible panes during spin, and for accessing the File-tab time
+        slider during playback.
     plotter
-        The PyVista ``QtInteractor`` whose camera the spin tick rotates.
+        The PyVista ``QtInteractor`` whose camera the spin tick rotates
+        in single-pane mode (or used as a fallback when the pane
+        container isn't yet wired).
     """
 
     def __init__(self, window, plotter):
@@ -39,18 +43,33 @@ class Playback:
         self._spin_timer.stop()
 
     def _spin_tick(self) -> None:
-        """Advance the camera one step around the global up vector."""
-        vc = self._plotter.renderer.GetActiveCamera()
-        fp = np.array(vc.GetFocalPoint(), dtype=float)
-        up = np.array(vc.GetViewUp(), dtype=float)
-        up /= np.linalg.norm(up) or 1.0
-        rel = np.array(vc.GetPosition(), dtype=float) - fp
+        """Advance every visible pane's camera one step around its up vector.
+
+        In multi-pane mode this rotates all visible panes simultaneously
+        so the comparison stays geometrically aligned. Each pane uses its
+        own camera (cameras aren't truly linked yet — that's the next PR
+        in the multi-pane series), but they all receive the same angular
+        delta and start from the same configured camera, so they stay
+        visually in step.
+        """
+        container = getattr(self._window, "_pane_container", None)
+        plotters = (
+            [container.pane(i).plotter for i in range(container.n_visible)]
+            if container is not None
+            else [self._plotter]
+        )
         a = np.radians(0.4)
         ca, sa = np.cos(a), np.sin(a)
-        new_rel = rel * ca + np.cross(up, rel) * sa + up * (up @ rel) * (1 - ca)
-        new_pos = fp + new_rel
-        vc.SetPosition(float(new_pos[0]), float(new_pos[1]), float(new_pos[2]))
-        self._plotter.render()
+        for plotter in plotters:
+            vc = plotter.renderer.GetActiveCamera()
+            fp = np.array(vc.GetFocalPoint(), dtype=float)
+            up = np.array(vc.GetViewUp(), dtype=float)
+            up /= np.linalg.norm(up) or 1.0
+            rel = np.array(vc.GetPosition(), dtype=float) - fp
+            new_rel = rel * ca + np.cross(up, rel) * sa + up * (up @ rel) * (1 - ca)
+            new_pos = fp + new_rel
+            vc.SetPosition(float(new_pos[0]), float(new_pos[1]), float(new_pos[2]))
+            plotter.render()
 
     # ── time-slider playback ──────────────────────
     def toggle_play(self, on: bool) -> None:
@@ -72,14 +91,22 @@ class Playback:
             self._play_timer.setInterval(ms)
 
     def _play_step(self) -> None:
-        """Bump the File-tab time slider one step; loop at the end."""
+        """Bump the File-tab time slider one step; loop at the end.
+
+        Reads from the selected pane's state (``pane_state``) so playback
+        targets whichever pane the user has focused — without this the
+        play button silently advanced pane 0 regardless of selection.
+        """
         w = self._window
-        meta = w._file_state.file_fields.get(w._file_state.color_by)
+        pane = w.pane_state
+        meta = w._file_state.file_fields.get(pane.color_by)
         if not meta or not meta.get("time_varying"):
             self._play_timer.stop()
             w.panel.file_tab.display.play_btn.setChecked(False)
             return
         n = meta["shape"][0]
-        new_idx = (w._file_state.time_index + 1) % n
-        # Triggers _on_time_changed via the tab's time_changed signal.
+        new_idx = (pane.time_index + 1) % n
+        # Triggers _on_time_changed via the tab's time_changed signal,
+        # which writes through pane_state too — the selected pane is
+        # updated, no other panes are touched.
         w.panel.file_tab.display.time_slider.setValue(new_idx)
