@@ -28,7 +28,9 @@ class Pane(QFrame):
     clicked = Signal(int)
 
     _STYLE_UNSELECTED = "Pane { border: 2px solid transparent; }"
-    _STYLE_SELECTED = "Pane { border: 2px solid #ff8800; }"
+    # Soft muted-amber rather than full safety-cone orange — visible enough
+    # to identify the focused pane without dominating the viewport.
+    _STYLE_SELECTED = "Pane { border: 2px solid #d4a060; }"
 
     def __init__(self, idx: int, parent: QWidget | None = None):
         super().__init__(parent)
@@ -128,6 +130,17 @@ class PaneContainer(QWidget):
         for i in range(n_panes):
             self._panes[i].setVisible(True)
         self._outer.addWidget(self._splitter)
+        # QSplitter distributes space proportionally to children's sizeHints
+        # by default, which can leave panes unequal at startup before the
+        # first interaction. Force an equal split for predictable layout.
+        if rows == 1:
+            self._splitter.setSizes([1000] * n_panes)
+        else:
+            self._splitter.setSizes([1000] * rows)
+            for child_idx in range(self._splitter.count()):
+                inner = self._splitter.widget(child_idx)
+                if isinstance(inner, QSplitter):
+                    inner.setSizes([1000] * cols)
         self._n_visible = n_panes
 
     @property

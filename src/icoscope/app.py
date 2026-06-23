@@ -427,15 +427,25 @@ class MainWindow(QMainWindow):
 
         Each pane's scalar array is bound to its own named key on the
         polydata so panes can independently colour the shared geometry.
+        Stale arrays whose length doesn't match the new cell count are
+        skipped (and the slot cleared) — happens on tab switch when the
+        previous tab's pane scalars carry the wrong shape.
         """
         faces_flat = []
         for c in self.cells:
             faces_flat.append(len(c))
             faces_flat.extend(c)
         mesh = pv.PolyData(self.verts, faces=np.array(faces_flat, dtype=np.int64))
+        n_cells = len(self.cells)
         for i, arr in enumerate(self._pane_scalars):
-            if arr is not None:
-                mesh.cell_data[self._pane_scalar_key(i)] = np.asarray(arr)
+            if arr is None:
+                continue
+            if len(arr) != n_cells:
+                # Stale entry from a previous mesh — drop it instead of
+                # crashing in vtk's array-length check.
+                self._pane_scalars[i] = None
+                continue
+            mesh.cell_data[self._pane_scalar_key(i)] = np.asarray(arr)
         return mesh
 
     def _update_scalars_only(self, pane_idx: int | None = None) -> None:
@@ -859,7 +869,7 @@ class MainWindow(QMainWindow):
         self._update_status()
 
     def _on_cmap(self, name):
-        self.state.cmap = name
+        self.pane_state.cmap = name
         self._build_scene()
 
     def _on_coast(self, on):
@@ -945,8 +955,11 @@ class MainWindow(QMainWindow):
         self._pane_scalars[idx] = arr
 
     def _on_color_by(self, name):
-        st = self.state
-        st.color_by = name
+        # The change targets the selected pane (or pane 0 on Ico/LonLat
+        # where there's only ever one). Writing to self.pane_state (not
+        # self.state) routes through the active pane — without this, multi-
+        # pane changes would silently update pane 0 regardless of selection.
+        self.pane_state.color_by = name
         # Enable/disable cmap-related widgets on the tab that emitted the change.
         tab = self.active_tab
         if hasattr(tab, "display"):
@@ -963,13 +976,13 @@ class MainWindow(QMainWindow):
                 )
             else:
                 self.panel.file_tab.set_time_axis(0)
-            self._file_state.time_index = 0
+            self.pane_state.time_index = 0
             n_levels = meta.get("n_levels", 0) if meta else 0
             if n_levels > 1 and self._file_state.file_levels is not None:
                 self.panel.file_tab.set_levels(self._file_state.file_levels)
             else:
                 self.panel.file_tab.set_levels(None)
-            self._file_state.level_index = 0
+            self.pane_state.level_index = 0
         self._refresh_scalars()
         # Color-by changes only the scalar field — geometry (and the picker
         # locator built from it) stay valid, so just swap scalars in place.
@@ -982,11 +995,11 @@ class MainWindow(QMainWindow):
         self._build_scene()
 
     def _on_colorbar(self, on):
-        self.state.colorbar_on = on
+        self.pane_state.colorbar_on = on
         self._build_scene()
 
     def _on_center_zero(self, on):
-        self.state.center_zero = on
+        self.pane_state.center_zero = on
         self._build_scene()
 
     def _on_edge_color(self, hex_str):
@@ -1436,10 +1449,13 @@ class MainWindow(QMainWindow):
         self._update_status()
 
     def _on_time_changed(self, idx):
-        if idx == self._file_state.time_index:
+        # Targets the selected pane (or pane 0 when no selection). Going
+        # through self.pane_state ensures multi-pane scrubs only affect
+        # the user's selected viewport.
+        if idx == self.pane_state.time_index:
             return
-        self._file_state.time_index = idx
-        meta = self._file_state.file_fields.get(self._file_state.color_by)
+        self.pane_state.time_index = idx
+        meta = self._file_state.file_fields.get(self.pane_state.color_by)
         if meta:
             self.panel.file_tab.set_time_label(idx)
         self._refresh_scalars()
@@ -1450,9 +1466,9 @@ class MainWindow(QMainWindow):
         self._build_scene()
 
     def _on_level_changed(self, idx):
-        if idx == self._file_state.level_index:
+        if idx == self.pane_state.level_index:
             return
-        self._file_state.level_index = idx
+        self.pane_state.level_index = idx
         self._refresh_scalars()
         self._refresh_picked_value()
         self._update_scalars_only()
