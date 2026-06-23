@@ -163,6 +163,11 @@ class MainWindow(QMainWindow):
         # selection has been made yet (single-pane behaviour).
         self._pane_scalars: list = [None] * PaneContainer.MAX_PANES
         self._selected_pane: int | None = None
+        # Remember the File tab's last pane layout so we can restore it when
+        # the user comes back from Ico / LonLat (we collapse to Single on
+        # leave so non-File tabs don't render their synthetic mesh into
+        # multiple panes; without this the File-tab layout would be lost).
+        self._file_layout: int = 1
         # Last successful pick: (cell_idx, lon, lat) or None. Used to refresh
         # the status-bar value display after time/level slider scrubs without
         # forcing the user to re-pick.
@@ -839,6 +844,11 @@ class MainWindow(QMainWindow):
         self._pane_container.set_layout(n_panes)
         _menubar.sync_layout_checkmarks(
             getattr(self, "_layout_actions", {}), n_panes)
+        # Remember the user's File-tab layout so it survives tab switches
+        # (we collapse to Single when leaving File so the synthetic Ico /
+        # LonLat meshes don't render into all 4 viewports).
+        if self.panel.tabs.currentIndex() == Tab.FILE:
+            self._file_layout = n_panes
         panes = self.state.panes
         # Newly-visible panes inherit pane 0's settings so the user has
         # a coherent starting point (see _design/multi-pane-comparison.md
@@ -1403,11 +1413,17 @@ class MainWindow(QMainWindow):
                 _menubar.sync_layout_checkmarks(
                     getattr(self, "_layout_actions", {}), 1)
             self._select_pane(None)
-        elif self._selected_pane is None:
-            # Entering the File tab: auto-select pane 0 so the user has a
-            # coherent "Pane 1 settings" view by default (matches the
-            # design doc's "default on file open" behaviour).
-            self._select_pane(0)
+        else:
+            # Entering the File tab: restore the last layout the user
+            # picked here (we collapsed to Single on leave for Ico/LonLat;
+            # without this the user's 2×2 or 1×2 setup would be lost on
+            # every round-trip).
+            if self._pane_container.n_visible != self._file_layout:
+                self._on_pane_layout(self._file_layout)
+            if self._selected_pane is None:
+                # Auto-select pane 0 so the side panel starts in "Pane 1
+                # settings" mode (matches the design doc's default).
+                self._select_pane(0)
 
         if idx == Tab.ICO:
             self._regen_synthetic()

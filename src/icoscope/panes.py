@@ -113,16 +113,23 @@ class PaneContainer(QWidget):
             self._splitter = None
 
         rows, cols = self._LAYOUTS[n_panes]
+        # Slim handle so the ridge between viewports doesn't dominate the
+        # comparison. 2 px feels right at typical screen DPI; the user can
+        # still grab and drag to rebalance.
+        handle_w = 2
         if rows == 1:
             # 1 or 1×2 — single horizontal splitter
             self._splitter = QSplitter(Qt.Horizontal)
+            self._splitter.setHandleWidth(handle_w)
             for i in range(n_panes):
                 self._splitter.addWidget(self._panes[i])
         else:
             # 2×2 — vertical splitter of two horizontal splitters
             self._splitter = QSplitter(Qt.Vertical)
+            self._splitter.setHandleWidth(handle_w)
             for row in range(rows):
                 row_split = QSplitter(Qt.Horizontal)
+                row_split.setHandleWidth(handle_w)
                 for col in range(cols):
                     idx = row * cols + col
                     row_split.addWidget(self._panes[idx])
