@@ -34,21 +34,41 @@ from .themes import CMAPS, THEMES
 
 
 @dataclass
-class _TabState:
-    """Per-tab display state — colormap, overlays, widths, color overrides.
+class PaneState:
+    """Per-pane field/coloring state.
 
-    Each tab in the side panel owns one of these so switching tabs is fully
-    stateful: the user's choices on the Ico tab don't leak into the File tab
-    and vice-versa.
+    For the Ico and LonLat tabs there is always exactly one pane (the
+    synthetic mesh rendering). For the File tab there may be 1, 2, or
+    4 panes in multi-pane layouts; each pane independently picks its
+    own field (``color_by``), colormap, time/level indices, etc.
     """
 
     color_by: str = "None"
     cmap: str = "viridis"
+    center_zero: bool = False
+    colorbar_on: bool = True
+    time_index: int = 0
+    level_index: int = 0
+
+
+@dataclass
+class _TabState:
+    """Per-tab display state — overlays, widths, color overrides + per-pane list.
+
+    Each tab in the side panel owns one of these so switching tabs is fully
+    stateful: the user's choices on the Ico tab don't leak into the File tab
+    and vice-versa.
+
+    Per-pane fields (``color_by``, ``cmap``, ``time_index`` etc.) now live
+    on :class:`PaneState`; this class holds the list of panes (always
+    length 1 for Ico/LonLat; 1, 2, or 4 for File depending on the active
+    layout). The tab-shared bits (overlays, theme overrides, file metadata)
+    stay here.
+    """
+
     coastlines_on: bool = False
     graticule_on: bool = False
     edges_on: bool = True
-    colorbar_on: bool = True
-    center_zero: bool = False
     spin_on: bool = False
     edge_color_override: str | None = None
     coast_color_override: str | None = None
@@ -56,12 +76,49 @@ class _TabState:
     edge_width: float = 0.6
     coast_width: float = 1.2
     grat_width: float = 0.6
-    time_index: int = 0
-    level_index: int = 0
     # file-only fields
     file_fields: dict = field(default_factory=dict)
     # presnivs (Pa) for the loaded file, or None if no vertical dim
     file_levels: object = None
+    # Per-pane state. Default to a single pane; the File tab may grow this
+    # list to 2 or 4 entries when the user picks a multi-pane layout.
+    panes: list = field(default_factory=lambda: [PaneState()])
+
+    # ── back-compat aliases for the per-pane fields ──────────────────────
+    # Existing `state.color_by = ...` style accesses transparently read/write
+    # the first pane. The multi-pane scaffold (later in this PR series) will
+    # migrate explicit call sites to ``state.panes[i].X`` where the selected
+    # pane index matters; these aliases keep single-pane behaviour intact
+    # during the staged refactor.
+    @property
+    def color_by(self) -> str: return self.panes[0].color_by
+    @color_by.setter
+    def color_by(self, v: str) -> None: self.panes[0].color_by = v
+
+    @property
+    def cmap(self) -> str: return self.panes[0].cmap
+    @cmap.setter
+    def cmap(self, v: str) -> None: self.panes[0].cmap = v
+
+    @property
+    def center_zero(self) -> bool: return self.panes[0].center_zero
+    @center_zero.setter
+    def center_zero(self, v: bool) -> None: self.panes[0].center_zero = v
+
+    @property
+    def colorbar_on(self) -> bool: return self.panes[0].colorbar_on
+    @colorbar_on.setter
+    def colorbar_on(self, v: bool) -> None: self.panes[0].colorbar_on = v
+
+    @property
+    def time_index(self) -> int: return self.panes[0].time_index
+    @time_index.setter
+    def time_index(self, v: int) -> None: self.panes[0].time_index = v
+
+    @property
+    def level_index(self) -> int: return self.panes[0].level_index
+    @level_index.setter
+    def level_index(self, v: int) -> None: self.panes[0].level_index = v
 
 
 class MainWindow(QMainWindow):
