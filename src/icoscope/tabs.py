@@ -109,6 +109,7 @@ _DISPLAY_SIGNALS_BASE = (
     "color_by_changed", "cmap_changed", "colorbar_toggled", "center_zero_toggled",
     "coastlines_toggled", "graticule_toggled", "edges_toggled",
     "coast_color_changed", "grat_color_changed", "edge_color_changed",
+    "cbar_color_changed",
     "coast_width_changed", "grat_width_changed", "edge_width_changed",
     "autorotate_toggled",
     "screenshot_clicked", "vector_export_clicked",
@@ -126,6 +127,7 @@ _DISPLAY_SIGNALS_PANE = (
 _DISPLAY_SIGNALS_GLOBAL = (
     "coastlines_toggled", "graticule_toggled", "edges_toggled",
     "coast_color_changed", "grat_color_changed", "edge_color_changed",
+    "cbar_color_changed",
     "coast_width_changed", "grat_width_changed", "edge_width_changed",
     "autorotate_toggled",
     "play_speed_changed",
@@ -239,6 +241,10 @@ class IcoTab(QWidget):
     def set_grat_color(self, hex_str: str) -> None:
         """Forward to the inner display block."""
         self.display.set_grat_color(hex_str)
+
+    def set_cbar_color(self, hex_str: str) -> None:
+        """Forward to the inner display block."""
+        self.display.set_cbar_color(hex_str)
 
     # ── zoom helpers ─────────────────────────────────────────────────────
 
@@ -479,6 +485,10 @@ class LonLatTab(QWidget):
         """Forward to the inner display block."""
         self.display.set_grat_color(hex_str)
 
+    def set_cbar_color(self, hex_str: str) -> None:
+        """Forward to the inner display block."""
+        self.display.set_cbar_color(hex_str)
+
 
 class FileTab(QWidget):
     """File tab: Open/Unload + file summary + display controls (with time)."""
@@ -592,6 +602,10 @@ class FileTab(QWidget):
     def set_grat_color(self, hex_str: str) -> None:
         """Forward to the global display block (overlay swatches live there)."""
         self.display_global.set_grat_color(hex_str)
+
+    def set_cbar_color(self, hex_str: str) -> None:
+        """Forward to the global display block."""
+        self.display_global.set_cbar_color(hex_str)
 
     def set_time_axis(self, n_steps: int, times=None) -> None:
         """Forward to the inner display block."""

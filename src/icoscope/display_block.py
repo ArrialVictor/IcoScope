@@ -77,6 +77,7 @@ class _DisplayBlock(QWidget):
     edge_color_changed  = Signal(str)
     coast_color_changed = Signal(str)
     grat_color_changed  = Signal(str)
+    cbar_color_changed  = Signal(str)
 
     # Overlays
     coastlines_toggled  = Signal(bool)
@@ -205,6 +206,21 @@ class _DisplayBlock(QWidget):
         self.edges_cb, self.edge_btn, self.edge_width = toggle_color_row(
             "Cell edges", self.edges_toggled, self.edge_color_changed,
             self.edge_width_changed, default_width=0.6, checked=True)
+
+        # Colorbar text colour. No toggle (the colorbar's on/off lives in
+        # Coloring per pane) and no width spinbox — just a label + colour
+        # picker that overrides the theme default for every visible pane.
+        cbar_row = QHBoxLayout()
+        cbar_row.setContentsMargins(0, 0, 0, 0)
+        cbar_row.setSpacing(6)
+        cbar_lbl = QLabel("Colorbar text")
+        cbar_row.addWidget(cbar_lbl, stretch=1)
+        self.cbar_btn = ColorButton("#ffffff")
+        self.cbar_btn.color_changed.connect(self.cbar_color_changed)
+        cbar_row.addWidget(self.cbar_btn)
+        cbar_wrap = QWidget()
+        cbar_wrap.setLayout(cbar_row)
+        ol.addWidget(cbar_wrap)
 
         return ov
 
@@ -359,6 +375,10 @@ class _DisplayBlock(QWidget):
     def set_grat_color(self, hex_str: str) -> None:
         """Set the graticule-color swatch."""
         self.grat_btn.set_color(hex_str)
+
+    def set_cbar_color(self, hex_str: str) -> None:
+        """Set the colorbar-text-color swatch."""
+        self.cbar_btn.set_color(hex_str)
 
     def set_time_axis(self, n_steps: int, times=None) -> None:
         """Configure the time slider for a time-varying field, or hide it.

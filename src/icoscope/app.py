@@ -73,6 +73,7 @@ class _TabState:
     edge_color_override: str | None = None
     coast_color_override: str | None = None
     grat_color_override: str | None = None
+    cbar_color_override: str | None = None
     edge_width: float = 0.6
     coast_width: float = 1.2
     grat_width: float = 0.6
@@ -277,6 +278,7 @@ class MainWindow(QMainWindow):
             tab.edge_color_changed.connect(self._on_edge_color)
             tab.coast_color_changed.connect(self._on_coast_color)
             tab.grat_color_changed.connect(self._on_grat_color)
+            tab.cbar_color_changed.connect(self._on_cbar_color)
             tab.edge_width_changed.connect(self._on_edge_width)
             tab.coast_width_changed.connect(self._on_coast_width)
             tab.grat_width_changed.connect(self._on_grat_width)
@@ -400,14 +402,21 @@ class MainWindow(QMainWindow):
         return self.state.grat_color_override or THEMES[self.theme_name].get(
             "grat", self._coast_color())
 
+    def _cbar_color(self):
+        """Colorbar text colour: theme default unless the user has overridden."""
+        return self.state.cbar_color_override or THEMES[self.theme_name].get(
+            "cbar", "white")
+
     def _sync_color_buttons(self):
         hex_edge = self._color_to_hex(self._edge_color())
         hex_coast = self._color_to_hex(self._coast_color())
         hex_grat = self._color_to_hex(self._grat_color())
+        hex_cbar = self._color_to_hex(self._cbar_color())
         for tab in (self.panel.ico_tab, self.panel.lonlat_tab, self.panel.file_tab):
             tab.set_edge_color(hex_edge)
             tab.set_coast_color(hex_coast)
             tab.set_grat_color(hex_grat)
+            tab.set_cbar_color(hex_cbar)
 
     @staticmethod
     def _color_to_hex(c):
@@ -526,6 +535,8 @@ class MainWindow(QMainWindow):
             line_width=st.edge_width,
             smooth_shading=False,
             show_scalar_bar=pane.colorbar_on and has_scalars,
+            scalar_bar_args=({"color": self._cbar_color()}
+                             if pane.colorbar_on and has_scalars else None),
             reset_camera=False,
         )
 
@@ -1031,6 +1042,10 @@ class MainWindow(QMainWindow):
 
     def _on_grat_color(self, hex_str):
         self.state.grat_color_override = hex_str
+        self._build_scene()
+
+    def _on_cbar_color(self, hex_str):
+        self.state.cbar_color_override = hex_str
         self._build_scene()
 
     def _on_edge_width(self, w):
