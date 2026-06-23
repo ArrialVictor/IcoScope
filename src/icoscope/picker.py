@@ -12,22 +12,34 @@ from qtpy.QtCore import QEvent, QObject, Qt
 
 
 class Picker(QObject):
-    """Click-to-pick + trackpad-pinch handler for a :class:`QtInteractor`.
+    """Click-to-pick + trackpad-pinch handler for one pane's :class:`QtInteractor`.
+
+    Picker is owned by a single pane. On a hit or empty-click it doesn't
+    update the status bar directly — it reports up to
+    ``window._on_pane_pick(pane_idx, cell_idx, lon, lat)`` (with
+    ``cell_idx=None`` on a miss). The window decides what to do with the
+    information: highlight one pane vs all panes (camera-sync mode), set
+    the active pane, refresh the status bar, etc.
 
     Parameters
     ----------
     window
-        The main window. Read for ``_mesh``, ``cells``, the lon/lat
-        status widget setter (``_set_lonlat``), and to install the
-        pinch-gesture event filter on the right Qt widget.
+        The main window. Read for ``_mesh``, ``cells``, ``verts`` (highlight
+        polyline geometry), and to install the pinch-gesture event filter
+        on the right Qt widget.
     plotter
         The PyVista ``QtInteractor`` to attach the picker to.
+    pane_idx
+        Which pane in :class:`~icoscope.panes.PaneContainer` this picker
+        belongs to. Passed through to ``window._on_pane_pick`` so the
+        window can route the hit to the right pane.
     """
 
-    def __init__(self, window, plotter):
+    def __init__(self, window, plotter, pane_idx: int = 0):
         super().__init__(window)
         self._window = window
         self._plotter = plotter
+        self._pane_idx = pane_idx
         self._cell_locator = None
 
     def attach(self) -> None:
@@ -50,12 +62,8 @@ class Picker(QObject):
                                pickable=False, reset_camera=False)
 
     def clear_highlight(self) -> None:
-        """Remove the highlight outline and clear lon/lat + value status widgets."""
+        """Remove this pane's highlight outline (does not touch status widgets)."""
         self._plotter.remove_actor("highlight", reset_camera=False, render=False)
-        if hasattr(self._window, "lon_box"):
-            self._window._clear_lonlat()
-        if hasattr(self._window, "value_label"):
-            self._window._clear_cell_value()
 
     def invalidate_locator(self) -> None:
         """Drop the cached vtkCellLocator (call after the mesh changes)."""
@@ -100,8 +108,7 @@ class Picker(QObject):
             ray = p_world - cam_pos
             n = np.linalg.norm(ray)
             if n == 0:
-                self.clear_highlight()
-                self._plotter.render()
+                self._window._on_pane_pick(self._pane_idx, None)
                 return
             ray /= n
 
@@ -111,9 +118,9 @@ class Picker(QObject):
             disc = b * b - c
             if disc < 0 or (t := -b - np.sqrt(disc)) <= 0:
                 # Ray misses the sphere (or front-hit is behind the camera) —
-                # treat as an explicit deselect: clear highlight + lon/lat + value.
-                self.clear_highlight()
-                self._plotter.render()
+                # treat as an explicit deselect: window clears highlights +
+                # status widgets across the visible panes.
+                self._window._on_pane_pick(self._pane_idx, None)
                 return
             hit = cam_pos + t * ray
 
@@ -127,18 +134,13 @@ class Picker(QObject):
             loc.FindClosestPoint(list(hit), closest, gcell, cell_id, sub_id, dist2)
             idx = int(cell_id)
             if idx < 0 or idx >= len(self._window.cells):
-                self.clear_highlight()
-                self._plotter.render()
+                self._window._on_pane_pick(self._pane_idx, None)
                 return
 
-            self.highlight_cell(idx)
             hit /= np.linalg.norm(hit) or 1.0
             lat = float(np.degrees(np.arcsin(np.clip(hit[2], -1, 1))))
             lon = float(np.degrees(np.arctan2(hit[1], hit[0])))
-            self._window._set_lonlat(lon, lat)
-            if hasattr(self._window, "value_label"):
-                self._window._set_cell_value(idx, lon=lon, lat=lat)
-            self._plotter.render()
+            self._window._on_pane_pick(self._pane_idx, idx, lon=lon, lat=lat)
 
         self._plotter.enable_point_picking(
             callback=on_pick, left_clicking=True,

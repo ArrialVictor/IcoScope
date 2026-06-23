@@ -331,12 +331,19 @@ class MainWindow(QMainWindow):
         self._mesh = self._to_polydata()
 
         # Helpers — instantiate after _mesh exists; the picker reads it lazily.
-        self.picker = Picker(self, self.plotter)
+        # One Picker per pane: all four are created upfront (matching
+        # PaneContainer's eager pane creation), so layout switches don't have
+        # to reattach pickers. self.picker aliases pane 0's picker for the
+        # single-pane code paths that don't care about multi-pane.
+        self._pickers = [Picker(self, self._pane_container.pane(i).plotter, i)
+                         for i in range(PaneContainer.MAX_PANES)]
+        self.picker = self._pickers[0]
         self.playback = Playback(self, self.plotter)
 
         self._build_scene()
         self.plotter.reset_camera()
-        self.picker.attach()
+        for p in self._pickers:
+            p.attach()
         self._apply_stylesheet()
         QShortcut(QKeySequence("Escape"), self, activated=self._on_escape)
         self._update_status()
@@ -603,8 +610,9 @@ class MainWindow(QMainWindow):
 
     # ── ESC: clear current selection + stop spin ──
     def _on_escape(self):
-        self.picker.clear_highlight()
+        self._clear_all_highlights(render=True)
         self._clear_lonlat()
+        self._clear_cell_value()
         # Deselect any active multi-pane selection so the side panel can
         # swap back to Global mode (stage 6 wires that up).
         self._select_pane(None)
@@ -900,6 +908,52 @@ class MainWindow(QMainWindow):
             # during normal click-to-rotate; explicit deselect is via Esc).
             return
         self._select_pane(idx)
+
+    def _on_pane_pick(self, pane_idx: int, cell_idx: int | None,
+                      *, lon: float | None = None,
+                      lat: float | None = None) -> None:
+        """Route a pane-picker hit (or miss) into highlight + status updates.
+
+        Called from :class:`~icoscope.picker.Picker` instead of having the
+        picker mutate window state directly. ``cell_idx=None`` is the miss /
+        empty-click signal: treat as a deselect intent and clear every
+        visible pane's highlight plus the status-bar widgets, regardless of
+        camera-sync mode.
+
+        On a hit, this method:
+
+        - promotes the clicked pane to the selected pane (so single-pane
+          codepaths reading ``self.scalars`` see the right field);
+        - paints the cell-outline highlight on **all visible panes** when
+          camera sync is on (cell index is geometry-based, so it lines up
+          spatially); on only the clicked pane otherwise (different cameras
+          would put the cell at different screen positions, so highlighting
+          elsewhere would mislead);
+        - updates the status-bar lon/lat + the active pane's cell value.
+          Per-pane value display is deferred to the future timeline-strip PR.
+        """
+        if cell_idx is None:
+            self._clear_all_highlights(render=True)
+            self._clear_lonlat()
+            self._clear_cell_value()
+            return
+
+        if pane_idx != self._selected_pane:
+            self._select_pane(pane_idx)
+
+        visible = self._pane_container.visible_panes()
+        if self._camera_sync_on:
+            targets = [self._pickers[p.idx] for p in visible]
+        else:
+            targets = [self._pickers[pane_idx]]
+        for p in targets:
+            p.highlight_cell(cell_idx)
+            p._plotter.render()
+
+        if lon is not None and lat is not None:
+            self._set_lonlat(lon, lat)
+        if hasattr(self, "value_label"):
+            self._set_cell_value(cell_idx, lon=lon, lat=lat)
 
     def _select_pane(self, idx: int | None) -> None:
         """Programmatic selection helper (used by clicks, Escape, tab switches).
@@ -1203,10 +1257,22 @@ class MainWindow(QMainWindow):
         """Refresh derived state after ``self.verts/cells/centers`` change."""
         self._refresh_scalars()
         self._mesh = self._to_polydata()
-        self.picker.invalidate_locator()
-        self.picker.clear_highlight()
+        self._invalidate_all_locators()
+        self._clear_all_highlights()
         self._build_scene()
         self._update_status()
+
+    def _invalidate_all_locators(self) -> None:
+        """Drop every pane-picker's cached vtkCellLocator after a mesh swap."""
+        for p in self._pickers:
+            p.invalidate_locator()
+
+    def _clear_all_highlights(self, *, render: bool = False) -> None:
+        """Remove the highlight outline on every pane and optionally render."""
+        for p in self._pickers:
+            p.clear_highlight()
+            if render:
+                p._plotter.render()
 
     def _regen_mesh(self, cache: dict | None, key: tuple, build) -> dict:
         """Reuse ``cache`` if its ``params`` match ``key``, else call ``build()``.
@@ -1626,8 +1692,8 @@ class MainWindow(QMainWindow):
         # Clear every pane's scalar array so a subsequent re-render isn't
         # confused by stale data left over from a prior file.
         self._pane_scalars = [None] * PaneContainer.MAX_PANES
-        self.picker.invalidate_locator()
-        self.picker.clear_highlight()
+        self._invalidate_all_locators()
+        self._clear_all_highlights()
         self._update_status()
 
     def _on_time_changed(self, idx):
