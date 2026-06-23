@@ -12,7 +12,7 @@ exactly one pane; layout switching lands in stage 3.
 from __future__ import annotations
 
 from pyvistaqt import QtInteractor
-from qtpy.QtCore import Qt, Signal
+from qtpy.QtCore import QEvent, Qt, Signal
 from qtpy.QtWidgets import QFrame, QSplitter, QVBoxLayout, QWidget
 
 
@@ -44,6 +44,12 @@ class Pane(QFrame):
         layout.setContentsMargins(0, 0, 0, 0)
         self.plotter = QtInteractor(self)
         layout.addWidget(self.plotter.interactor)
+        # Selection is most naturally triggered by clicking the sphere itself,
+        # but the VTK widget captures its own mouse events for rotate / pan /
+        # zoom — they never reach our mousePressEvent. Install an event
+        # filter so we also see those clicks (without consuming them — VTK
+        # still gets the event so the camera gesture works as before).
+        self.plotter.interactor.installEventFilter(self)
 
     def set_selected(self, selected: bool) -> None:
         """Toggle the selection border."""
@@ -55,6 +61,13 @@ class Pane(QFrame):
         """Forward the click to the parent then announce who was clicked."""
         super().mousePressEvent(ev)
         self.clicked.emit(self.idx)
+
+    def eventFilter(self, obj, event):
+        """Catch mouse-press events on the VTK widget to drive selection."""
+        if (obj is self.plotter.interactor
+                and event.type() == QEvent.MouseButtonPress):
+            self.clicked.emit(self.idx)
+        return False   # don't consume — let VTK handle the click too
 
 
 class PaneContainer(QWidget):
