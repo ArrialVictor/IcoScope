@@ -199,7 +199,7 @@ class MainWindow(QMainWindow):
         self.lmdz_dzoomy = float(lmdz_dzoomy)
         self.lmdz_taux = float(lmdz_taux)
         self.lmdz_tauy = float(lmdz_tauy)
-        self.transparent_export = False
+        self._export_defaults = _export.ExportDefaults()
 
         # Theme is window-level (background colour + default overlay tints).
         self.theme_name = "Dark"
@@ -304,8 +304,7 @@ class MainWindow(QMainWindow):
             tab.grat_width_changed.connect(self._on_grat_width)
             tab.autorotate_toggled.connect(self._on_spin)
             tab.sync_cameras_toggled.connect(self._on_camera_sync)
-            tab.screenshot_clicked.connect(self._on_screenshot)
-            tab.vector_export_clicked.connect(self._on_vector_export)
+            tab.export_clicked.connect(self._on_export)
 
         # Tab-specific signals
         self.panel.ico_tab.n_changed.connect(self._on_n)
@@ -1670,12 +1669,11 @@ class MainWindow(QMainWindow):
             self.playback.stop_spin()
         self.state.spin_on = on
 
-    def _on_screenshot(self):
-        self.transparent_export = _export.save_screenshot(
-            self, self.plotter, transparent=self.transparent_export)
-
-    def _on_vector_export(self):
-        _export.save_vector(self, self.plotter)
+    def _on_export(self):
+        _export.save_export(
+            self, self._pane_container, self._active_pane_idx,
+            defaults=self._export_defaults,
+        )
 
 
 def run(
