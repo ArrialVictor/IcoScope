@@ -169,6 +169,14 @@ class MainWindow(QMainWindow):
         # leave so non-File tabs don't render their synthetic mesh into
         # multiple panes; without this the File-tab layout would be lost).
         self._file_layout: int = 1
+        # Camera-sync state. When True (default), rotating / panning /
+        # zooming any pane mirrors the transform onto all other visible
+        # panes via VTK ModifiedEvent observers installed below.
+        # ``_syncing_cameras`` is the re-entrancy guard: while we're
+        # propagating a camera change to the other panes, the observers
+        # see _their_ cameras change and would loop without it.
+        self._camera_sync_on: bool = True
+        self._syncing_cameras: bool = False
         # Last successful pick: (cell_idx, lon, lat) or None. Used to refresh
         # the status-bar value display after time/level slider scrubs without
         # forcing the user to re-pick.
@@ -223,6 +231,17 @@ class MainWindow(QMainWindow):
         self._pane_container.pane_clicked.connect(self._on_pane_clicked)
         self.splitter.addWidget(self._pane_container)
         self.plotter = self._pane_container.pane(0).plotter
+        # Install VTK ModifiedEvent observers on every pane's camera so we
+        # can mirror movements across visible panes in sync mode. Done once
+        # here (rather than every redraw) since PaneContainer eagerly
+        # creates all MAX_PANES Pane widgets at construction; the cameras
+        # live for the window's lifetime.
+        for i in range(PaneContainer.MAX_PANES):
+            cam = self._pane_container.pane(i).plotter.renderer.GetActiveCamera()
+            cam.AddObserver(
+                "ModifiedEvent",
+                lambda c, e, src=i: self._on_camera_modified(src),
+            )
         self.panel = ControlPanel(CMAPS)
         self.splitter.addWidget(self.panel)
         self.splitter.setStretchFactor(0, 1)
@@ -284,6 +303,7 @@ class MainWindow(QMainWindow):
             tab.coast_width_changed.connect(self._on_coast_width)
             tab.grat_width_changed.connect(self._on_grat_width)
             tab.autorotate_toggled.connect(self._on_spin)
+            tab.sync_cameras_toggled.connect(self._on_camera_sync)
             tab.screenshot_clicked.connect(self._on_screenshot)
             tab.vector_export_clicked.connect(self._on_vector_export)
 
@@ -792,6 +812,60 @@ class MainWindow(QMainWindow):
         self.plotter.render()
 
     # ── slots ─────────────────────────────────────
+    def _on_camera_modified(self, src_pane_idx: int) -> None:
+        """Mirror pane ``src_pane_idx``'s camera onto every other visible pane.
+
+        Fired by VTK's ``ModifiedEvent`` on the source camera whenever it
+        changes (mouse rotate, pan, zoom, programmatic moves). Skips when:
+        - sync is OFF (each pane stays independent)
+        - source pane is hidden (we only mirror across *visible* panes)
+        - propagation is already in progress (re-entrancy guard — without
+          this every mirrored camera fires its own ModifiedEvent and loops)
+        """
+        if not self._camera_sync_on or self._syncing_cameras:
+            return
+        if src_pane_idx >= self._pane_container.n_visible:
+            return
+        src_cam = (
+            self._pane_container.pane(src_pane_idx).plotter.renderer
+            .GetActiveCamera()
+        )
+        pos = src_cam.GetPosition()
+        fp = src_cam.GetFocalPoint()
+        up = src_cam.GetViewUp()
+        view_angle = src_cam.GetViewAngle()
+        self._syncing_cameras = True
+        try:
+            for i in range(self._pane_container.n_visible):
+                if i == src_pane_idx:
+                    continue
+                pane = self._pane_container.pane(i)
+                cam = pane.plotter.renderer.GetActiveCamera()
+                cam.SetPosition(*pos)
+                cam.SetFocalPoint(*fp)
+                cam.SetViewUp(*up)
+                cam.SetViewAngle(view_angle)
+                pane.plotter.renderer.ResetCameraClippingRange()
+                pane.plotter.render()
+        finally:
+            self._syncing_cameras = False
+
+    def _on_camera_sync(self, on: bool) -> None:
+        """Toggle camera sync across visible panes.
+
+        When turning sync ON, snap every visible pane's camera to the
+        currently-selected pane's view (or pane 0 if no selection) so the
+        user sees an immediate "I see the same thing" effect. When turning
+        OFF, leave cameras where they are — each pane keeps the view it
+        had at the moment of toggle.
+        """
+        self._camera_sync_on = on
+        if on:
+            anchor = self._active_pane_idx
+            # Use the propagation path with sync already True; the source-
+            # pane camera is the one that drives every other pane.
+            self._on_camera_modified(anchor)
+
     def _on_reset_cameras(self) -> None:
         """Reset every visible pane's camera to the default isometric view.
 
@@ -802,11 +876,19 @@ class MainWindow(QMainWindow):
         point at the origin, which is what users actually want here. Then
         ``reset_camera()`` fits the sphere to the viewport.
         """
-        for i in range(self._pane_container.n_visible):
-            plotter = self._pane_container.pane(i).plotter
-            plotter.view_isometric()
-            plotter.reset_camera()
-            plotter.render()
+        # Suppress observer-driven mirroring during the per-pane reset.
+        # Otherwise the first pane's reset propagates to the others, then
+        # their reset propagates back, etc. — wasteful and produces flicker
+        # before all panes converge to the same isometric view anyway.
+        self._syncing_cameras = True
+        try:
+            for i in range(self._pane_container.n_visible):
+                plotter = self._pane_container.pane(i).plotter
+                plotter.view_isometric()
+                plotter.reset_camera()
+                plotter.render()
+        finally:
+            self._syncing_cameras = False
 
     def _on_pane_clicked(self, idx: int) -> None:
         """User left-clicked pane ``idx``. Promote it to the selected pane.
@@ -921,9 +1003,20 @@ class MainWindow(QMainWindow):
         self._build_scene()
         # Reset the camera on panes that just became visible — without
         # this they use PyVista's pre-add-mesh default which can leave
-        # the sphere clipped or off-centre.
-        for idx in range(prev_n, n_panes):
-            self._pane_container.pane(idx).plotter.reset_camera()
+        # the sphere clipped or off-centre. Suppress the camera-sync
+        # observer while doing so: every reset fires ModifiedEvent and
+        # would otherwise try to mirror the freshly-defaulted view back
+        # onto the existing panes (overwriting the user's view).
+        self._syncing_cameras = True
+        try:
+            for idx in range(prev_n, n_panes):
+                self._pane_container.pane(idx).plotter.reset_camera()
+        finally:
+            self._syncing_cameras = False
+        # In sync mode, snap the new panes to the active pane's view so
+        # they share the comparison vantage immediately.
+        if self._camera_sync_on and n_panes > prev_n:
+            self._on_camera_modified(self._active_pane_idx)
 
     def _on_theme(self, name):
         self.theme_name = name

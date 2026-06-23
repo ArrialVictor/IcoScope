@@ -111,7 +111,7 @@ _DISPLAY_SIGNALS_BASE = (
     "coast_color_changed", "grat_color_changed", "edge_color_changed",
     "cbar_color_changed",
     "coast_width_changed", "grat_width_changed", "edge_width_changed",
-    "autorotate_toggled",
+    "autorotate_toggled", "sync_cameras_toggled",
     "screenshot_clicked", "vector_export_clicked",
 )
 _DISPLAY_SIGNALS_TIME = ("time_changed", "play_toggled", "play_speed_changed",
@@ -129,7 +129,7 @@ _DISPLAY_SIGNALS_GLOBAL = (
     "coastlines_toggled", "graticule_toggled", "edges_toggled",
     "coast_color_changed", "grat_color_changed", "edge_color_changed",
     "coast_width_changed", "grat_width_changed", "edge_width_changed",
-    "autorotate_toggled",
+    "autorotate_toggled", "sync_cameras_toggled",
     "play_speed_changed",
     "screenshot_clicked", "vector_export_clicked",
 )

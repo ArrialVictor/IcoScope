@@ -60,6 +60,13 @@ class Playback:
         )
         a = np.radians(0.4)
         ca, sa = np.cos(a), np.sin(a)
+        # Direct camera mutations below fire VTK's ModifiedEvent observers
+        # which the window uses for camera sync — without the guard, each
+        # pane's tick would try to mirror itself onto the others, doing
+        # N*(N-1) cross-camera writes per tick. Same final state, just
+        # wasteful. Suppress for the duration of the per-pane update.
+        prev_sync = getattr(self._window, "_syncing_cameras", False)
+        self._window._syncing_cameras = True
         for plotter in plotters:
             vc = plotter.renderer.GetActiveCamera()
             fp = np.array(vc.GetFocalPoint(), dtype=float)
@@ -70,6 +77,7 @@ class Playback:
             new_pos = fp + new_rel
             vc.SetPosition(float(new_pos[0]), float(new_pos[1]), float(new_pos[2]))
             plotter.render()
+        self._window._syncing_cameras = prev_sync
 
     # ── time-slider playback ──────────────────────
     def toggle_play(self, on: bool) -> None:
