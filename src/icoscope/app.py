@@ -863,6 +863,13 @@ class MainWindow(QMainWindow):
         # Sync the per-pane colorbar text colour swatch too (override or
         # current theme default).
         ft.set_cbar_color(self._color_to_hex(self._cbar_color(pane_idx)))
+        # Re-sync the enable state so a colour-by pane that's switched in
+        # gets its swatch + cmap / checkboxes interactive immediately.
+        enable = pane.color_by != "None"
+        block.center_cb.setEnabled(enable)
+        block.bar_cb.setEnabled(enable)
+        block.cbar_btn.setEnabled(enable)
+        block.cmap_box.setEnabled(enable)
         meta = self._file_state.file_fields.get(pane.color_by)
         if meta and meta.get("time_varying"):
             n_t = meta["shape"][0]
@@ -1374,6 +1381,7 @@ class MainWindow(QMainWindow):
         # wouldn't fire otherwise.
         self.panel.file_tab.display.center_cb.setEnabled(False)
         self.panel.file_tab.display.bar_cb.setEnabled(False)
+        self.panel.file_tab.display.cbar_btn.setEnabled(False)
         self.panel.file_tab.display.cmap_box.setEnabled(False)
         self.panel.file_tab.set_time_steps(0)
         self.panel.file_tab.set_levels(None)
@@ -1449,6 +1457,7 @@ class MainWindow(QMainWindow):
         enable = self._file_state.color_by != "None"
         self.panel.file_tab.display.center_cb.setEnabled(enable)
         self.panel.file_tab.display.bar_cb.setEnabled(enable)
+        self.panel.file_tab.display.cbar_btn.setEnabled(enable)
         self.panel.file_tab.display.cmap_box.setEnabled(enable)
         self._apply_mesh_change()
 
