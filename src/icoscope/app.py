@@ -1463,46 +1463,43 @@ class MainWindow(QMainWindow):
 
     def _on_tab_changed(self, idx: int):
         """Tab is the active mesh source — swap the rendered scene accordingly."""
-        # Layout / selection housekeeping FIRST: the mesh regens below call
-        # _build_scene, which iterates over n_visible panes and indexes into
-        # self.state.panes — getting that consistent with the new tab's
-        # single-pane PaneState list before the regen prevents
-        # IndexError: list index out of range when leaving a multi-pane
-        # File-tab layout for Ico / LonLat.
+        # Tab switching has two ordering constraints that conflict:
+        # (a) leaving a multi-pane File layout for Ico/LonLat: collapse to
+        #     Single BEFORE the regen, otherwise _build_scene iterates over
+        #     panes that don't exist in the new tab's state.panes.
+        # (b) entering File from a single-pane Ico/LonLat: activate the
+        #     File mesh BEFORE restoring the multi-pane layout, otherwise
+        #     _on_pane_layout's _update_scalars_only writes File-sized
+        #     scalars against the previous tab's smaller mesh and crashes.
+        # Handle them as two separate branches.
         is_file_tab = idx == Tab.FILE
         for action in getattr(self, "_layout_actions", {}).values():
             action.setEnabled(is_file_tab)
+
         if not is_file_tab:
+            # Leaving File: collapse layout + clear selection BEFORE regen.
             if self._pane_container.n_visible != 1:
                 self._pane_container.set_layout(1)
                 _menubar.sync_layout_checkmarks(
                     getattr(self, "_layout_actions", {}), 1)
             self._select_pane(None)
+            if idx == Tab.ICO:
+                self._regen_synthetic()
+            elif idx == Tab.LONLAT:
+                self._regen_lonlat()
         else:
-            # Entering the File tab: restore the last layout the user
-            # picked here (we collapsed to Single on leave for Ico/LonLat;
-            # without this the user's 2×2 or 1×2 setup would be lost on
-            # every round-trip).
-            if self._pane_container.n_visible != self._file_layout:
-                self._on_pane_layout(self._file_layout)
-            if self._selected_pane is None:
-                # Auto-select pane 0 so the side panel starts in "Pane 1
-                # settings" mode (matches the design doc's default).
-                self._select_pane(0)
-
-        if idx == Tab.ICO:
-            self._regen_synthetic()
-        elif idx == Tab.LONLAT:
-            self._regen_lonlat()
-        elif idx == Tab.FILE:
+            # Entering File: activate the mesh FIRST so subsequent layout
+            # restore writes scalars against the correct geometry.
             if self._file_cache is not None:
                 self._activate_file_view()
             else:
                 # No file loaded — show a plain empty sphere instead of
-                # whatever was last rendered. The File tab's overlay
-                # settings are ignored in this state since there's no
-                # geographic data to overlay onto.
+                # whatever was last rendered.
                 self._render_empty_sphere()
+            if self._pane_container.n_visible != self._file_layout:
+                self._on_pane_layout(self._file_layout)
+            if self._selected_pane is None:
+                self._select_pane(0)
         # Per-tab colour overrides may differ → refresh swatches.
         self._sync_color_buttons()
         # Auto-rotate is per-tab state but the timer is window-level — sync
