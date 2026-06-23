@@ -5,7 +5,6 @@ from dataclasses import dataclass, field
 
 import numpy as np
 import pyvista as pv
-from pyvistaqt import QtInteractor
 from qtpy.QtCore import Qt, QTimer
 from qtpy.QtGui import QIcon, QKeySequence, QShortcut
 from qtpy.QtWidgets import (
@@ -27,6 +26,7 @@ from .controls import ControlPanel
 from .graticule import graticule_polydata
 from .grid import goldberg
 from .lonlat import latlon_mesh
+from .panes import PaneContainer
 from .picker import Picker
 from .playback import Playback
 from .tabs import Tab
@@ -187,20 +187,29 @@ class MainWindow(QMainWindow):
 
         # Per-tab display state — each tab keeps its own coloring, overlays,
         # animation, and color-by selection. Switching tabs swaps which
-        # state is read by the rendering code (via ``self.state``).
-        self._ico_state = _TabState(cmap=default_cmap)
-        self._lonlat_state = _TabState(cmap=default_cmap)
-        self._file_state = _TabState(cmap=default_cmap)
+        # state is read by the rendering code (via ``self.state``). cmap
+        # is set after construction because it now lives on PaneState
+        # (via the panes[0] back-compat property).
+        self._ico_state = _TabState()
+        self._lonlat_state = _TabState()
+        self._file_state = _TabState()
+        for state in (self._ico_state, self._lonlat_state, self._file_state):
+            state.cmap = default_cmap
 
         # central layout: a horizontal splitter so the user can drag the
-        # divider between the 3-D view and the control panel. Index 0 (the
-        # plotter) carries the stretch on window resize; index 1 (the panel)
-        # has a minimum width to stay readable.
+        # divider between the 3-D view(s) and the control panel. Index 0
+        # (the PaneContainer) carries the stretch on window resize; index 1
+        # (the panel) has a minimum width to stay readable.
         self.splitter = QSplitter(Qt.Horizontal)
         self.splitter.setChildrenCollapsible(False)
         self.splitter.setHandleWidth(4)
-        self.plotter = QtInteractor(self.splitter)
-        self.splitter.addWidget(self.plotter.interactor)
+        # Multi-pane scaffold: the central viewport is now a PaneContainer
+        # that holds up to 4 panes. Stage 2 always shows exactly one pane
+        # (pane 0) so single-pane behaviour is unchanged. Stage 3 adds the
+        # View menu to switch between 1 / 1×2 / 2×2 layouts.
+        self._pane_container = PaneContainer(self.splitter)
+        self.splitter.addWidget(self._pane_container)
+        self.plotter = self._pane_container.pane(0).plotter
         self.panel = ControlPanel(CMAPS)
         self.splitter.addWidget(self.panel)
         self.splitter.setStretchFactor(0, 1)
