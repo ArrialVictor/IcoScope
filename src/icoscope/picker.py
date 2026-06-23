@@ -42,6 +42,19 @@ class Picker(QObject):
         self._pane_idx = pane_idx
         self._cell_locator = None
 
+    @property
+    def plotter(self):
+        """The underlying :class:`pyvistaqt.QtInteractor`.
+
+        Use this read-only handle (or :meth:`render`) instead of poking
+        ``picker._plotter`` from outside.
+        """
+        return self._plotter
+
+    def render(self) -> None:
+        """Force a render on this picker's plotter."""
+        self._plotter.render()
+
     def attach(self) -> None:
         """Install the click-picker and the trackpad pinch event filter."""
         self._attach_picker()

@@ -333,11 +333,9 @@ class MainWindow(QMainWindow):
         # Helpers — instantiate after _mesh exists; the picker reads it lazily.
         # One Picker per pane: all four are created upfront (matching
         # PaneContainer's eager pane creation), so layout switches don't have
-        # to reattach pickers. self.picker aliases pane 0's picker for the
-        # single-pane code paths that don't care about multi-pane.
+        # to reattach pickers.
         self._pickers = [Picker(self, self._pane_container.pane(i).plotter, i)
                          for i in range(PaneContainer.MAX_PANES)]
-        self.picker = self._pickers[0]
         self.playback = Playback(self, self.plotter)
 
         self._build_scene()
@@ -610,9 +608,7 @@ class MainWindow(QMainWindow):
 
     # ── ESC: clear current selection + stop spin ──
     def _on_escape(self):
-        self._clear_all_highlights(render=True)
-        self._clear_lonlat()
-        self._clear_cell_value()
+        self._clear_pick_state(render=True)
         # Deselect any active multi-pane selection so the side panel can
         # swap back to Global mode (stage 6 wires that up).
         self._select_pane(None)
@@ -933,9 +929,10 @@ class MainWindow(QMainWindow):
           Per-pane value display is deferred to the future timeline-strip PR.
         """
         if cell_idx is None:
-            self._clear_all_highlights(render=True)
-            self._clear_lonlat()
-            self._clear_cell_value()
+            # Miss / empty-click is a full deselect — same effect as Escape,
+            # including dropping the pane selection. Matches the design doc
+            # ("empty-click deselects everything").
+            self._clear_pick_state(render=True)
             return
 
         if pane_idx != self._selected_pane:
@@ -948,7 +945,7 @@ class MainWindow(QMainWindow):
             targets = [self._pickers[pane_idx]]
         for p in targets:
             p.highlight_cell(cell_idx)
-            p._plotter.render()
+            p.render()
 
         if lon is not None and lat is not None:
             self._set_lonlat(lon, lat)
@@ -1033,6 +1030,13 @@ class MainWindow(QMainWindow):
         zoom.
         """
         prev_n = self._pane_container.n_visible
+        # Layout change retires the prior pick: highlight outlines on now-
+        # hidden panes would silently reappear out-of-date when the user
+        # expands the layout again. Drop the pick so the user starts the new
+        # layout with a clean slate. _build_scene() renders below, so no
+        # explicit render needed here.
+        if n_panes != prev_n:
+            self._clear_pick_state(render=False, deselect_pane=False)
         self._pane_container.set_layout(n_panes)
         _menubar.sync_layout_checkmarks(
             getattr(self, "_layout_actions", {}), n_panes)
@@ -1258,7 +1262,11 @@ class MainWindow(QMainWindow):
         self._refresh_scalars()
         self._mesh = self._to_polydata()
         self._invalidate_all_locators()
-        self._clear_all_highlights()
+        # Mesh swap invalidates the picked cell: the index points at a
+        # different polygon now. Drop the entire pick state (lon/lat + value
+        # would otherwise stay stale). Don't reset the selected pane — the
+        # user's pane selection is independent of which cell they picked.
+        self._clear_pick_state(render=False, deselect_pane=False)
         self._build_scene()
         self._update_status()
 
@@ -1267,12 +1275,36 @@ class MainWindow(QMainWindow):
         for p in self._pickers:
             p.invalidate_locator()
 
-    def _clear_all_highlights(self, *, render: bool = False) -> None:
-        """Remove the highlight outline on every pane and optionally render."""
+    def _clear_pick_state(self, *, render: bool = False,
+                          deselect_pane: bool = True) -> None:
+        """Drop every visible pick artifact in one place.
+
+        Single source of truth for "deselect": clears the highlight outline
+        on every pane, the status-bar lon/lat, the status-bar cell-value
+        label, and (by default) the active pane selection. Used by Escape,
+        the picker miss branch, mesh swaps, file unload, and layout
+        changes — so the four paths can't drift apart on what "clear"
+        means.
+
+        Parameters
+        ----------
+        render
+            Force a render on each pane after removing the highlight actor.
+            Pass ``False`` when the caller will render shortly anyway
+            (e.g. ``_build_scene``).
+        deselect_pane
+            Also drop the active pane selection. ``False`` is for system-
+            triggered clears (mesh swap, file unload) where the user's
+            pane selection is independent of the pick.
+        """
         for p in self._pickers:
             p.clear_highlight()
             if render:
-                p._plotter.render()
+                p.render()
+        self._clear_lonlat()
+        self._clear_cell_value()
+        if deselect_pane:
+            self._select_pane(None)
 
     def _regen_mesh(self, cache: dict | None, key: tuple, build) -> dict:
         """Reuse ``cache`` if its ``params`` match ``key``, else call ``build()``.
@@ -1693,7 +1725,10 @@ class MainWindow(QMainWindow):
         # confused by stale data left over from a prior file.
         self._pane_scalars = [None] * PaneContainer.MAX_PANES
         self._invalidate_all_locators()
-        self._clear_all_highlights()
+        # File unload: any prior pick is meaningless on the empty sphere.
+        # The render-window loop above already issued a render per plotter,
+        # so we don't need another one here.
+        self._clear_pick_state(render=False, deselect_pane=False)
         self._update_status()
 
     def _on_time_changed(self, idx):
