@@ -100,8 +100,7 @@ class _DisplayBlock(QWidget):
     level_changed       = Signal(int)
 
     # Export
-    screenshot_clicked     = Signal()
-    vector_export_clicked  = Signal()
+    export_clicked         = Signal()
 
     def __init__(self, cmaps: list[str], with_time: bool,
                  parent: QWidget | None = None,
@@ -340,12 +339,9 @@ class _DisplayBlock(QWidget):
     def _build_export_group(self) -> QGroupBox:
         exp = QGroupBox("Export")
         elay = QHBoxLayout(exp)
-        self.shot_btn = QPushButton("Save as PNG…")
-        self.shot_btn.clicked.connect(self.screenshot_clicked)
-        elay.addWidget(self.shot_btn)
-        self.vec_btn = QPushButton("Save as SVG…")
-        self.vec_btn.clicked.connect(self.vector_export_clicked)
-        elay.addWidget(self.vec_btn)
+        self.export_btn = QPushButton("Export…")
+        self.export_btn.clicked.connect(self.export_clicked)
+        elay.addWidget(self.export_btn)
         return exp
 
     # ── public setters ────────────────────────────────────────────────────

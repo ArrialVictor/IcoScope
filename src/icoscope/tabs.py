@@ -112,7 +112,7 @@ _DISPLAY_SIGNALS_BASE = (
     "cbar_color_changed",
     "coast_width_changed", "grat_width_changed", "edge_width_changed",
     "autorotate_toggled", "sync_cameras_toggled",
-    "screenshot_clicked", "vector_export_clicked",
+    "export_clicked",
 )
 _DISPLAY_SIGNALS_TIME = ("time_changed", "play_toggled", "play_speed_changed",
                          "level_changed")
@@ -131,7 +131,7 @@ _DISPLAY_SIGNALS_GLOBAL = (
     "coast_width_changed", "grat_width_changed", "edge_width_changed",
     "autorotate_toggled", "sync_cameras_toggled",
     "play_speed_changed",
-    "screenshot_clicked", "vector_export_clicked",
+    "export_clicked",
 )
 
 
