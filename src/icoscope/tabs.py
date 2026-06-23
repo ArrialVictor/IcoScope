@@ -122,12 +122,12 @@ _DISPLAY_SIGNALS_TIME = ("time_changed", "play_toggled", "play_speed_changed",
 # autorotate / playback speed / export live on the global block.
 _DISPLAY_SIGNALS_PANE = (
     "color_by_changed", "cmap_changed", "colorbar_toggled", "center_zero_toggled",
+    "cbar_color_changed",
     "time_changed", "play_toggled", "level_changed",
 )
 _DISPLAY_SIGNALS_GLOBAL = (
     "coastlines_toggled", "graticule_toggled", "edges_toggled",
     "coast_color_changed", "grat_color_changed", "edge_color_changed",
-    "cbar_color_changed",
     "coast_width_changed", "grat_width_changed", "edge_width_changed",
     "autorotate_toggled",
     "play_speed_changed",
@@ -604,8 +604,8 @@ class FileTab(QWidget):
         self.display_global.set_grat_color(hex_str)
 
     def set_cbar_color(self, hex_str: str) -> None:
-        """Forward to the global display block."""
-        self.display_global.set_cbar_color(hex_str)
+        """Forward to the per-pane display block (colorbar lives in Coloring)."""
+        self.display_pane.set_cbar_color(hex_str)
 
     def set_time_axis(self, n_steps: int, times=None) -> None:
         """Forward to the inner display block."""

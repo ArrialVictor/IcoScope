@@ -47,6 +47,7 @@ class PaneState:
     cmap: str = "viridis"
     center_zero: bool = False
     colorbar_on: bool = True
+    cbar_color_override: str | None = None
     time_index: int = 0
     level_index: int = 0
 
@@ -73,7 +74,6 @@ class _TabState:
     edge_color_override: str | None = None
     coast_color_override: str | None = None
     grat_color_override: str | None = None
-    cbar_color_override: str | None = None
     edge_width: float = 0.6
     coast_width: float = 1.2
     grat_width: float = 0.6
@@ -403,9 +403,11 @@ class MainWindow(QMainWindow):
         return self.state.grat_color_override or THEMES[self.theme_name].get(
             "grat", self._coast_color())
 
-    def _cbar_color(self):
-        """Colorbar text colour: theme default unless the user has overridden."""
-        return self.state.cbar_color_override or THEMES[self.theme_name].get(
+    def _cbar_color(self, pane_idx: int | None = None):
+        """Per-pane colorbar text colour (override or theme default)."""
+        idx = self._active_pane_idx if pane_idx is None else pane_idx
+        pane = self.state.panes[idx]
+        return pane.cbar_color_override or THEMES[self.theme_name].get(
             "cbar", "white")
 
     def _sync_color_buttons(self):
@@ -536,7 +538,10 @@ class MainWindow(QMainWindow):
             line_width=st.edge_width,
             smooth_shading=False,
             show_scalar_bar=pane.colorbar_on and has_scalars,
-            scalar_bar_args=({"color": self._cbar_color()}
+            scalar_bar_args=({"color": self._cbar_color(pane_idx),
+                              "title_font_size": 12,
+                              "label_font_size": 10,
+                              "fmt": "%.3g"}
                              if pane.colorbar_on and has_scalars else None),
             reset_camera=False,
         )
@@ -842,6 +847,9 @@ class MainWindow(QMainWindow):
         block.bar_cb.blockSignals(True)
         block.bar_cb.setChecked(pane.colorbar_on)
         block.bar_cb.blockSignals(False)
+        # Sync the per-pane colorbar text colour swatch too (override or
+        # current theme default).
+        ft.set_cbar_color(self._color_to_hex(self._cbar_color(pane_idx)))
         meta = self._file_state.file_fields.get(pane.color_by)
         if meta and meta.get("time_varying"):
             n_t = meta["shape"][0]
@@ -1014,6 +1022,7 @@ class MainWindow(QMainWindow):
         if hasattr(tab, "display"):
             tab.display.center_cb.setEnabled(name != "None")
             tab.display.bar_cb.setEnabled(name != "None")
+            tab.display.cbar_btn.setEnabled(name != "None")
             tab.display.cmap_box.setEnabled(name != "None")
         # configure the time + level sliders for the active field (File tab only).
         meta = self._file_state.file_fields.get(name) if tab is self.panel.file_tab else None
@@ -1064,7 +1073,7 @@ class MainWindow(QMainWindow):
         self._build_scene()
 
     def _on_cbar_color(self, hex_str):
-        self.state.cbar_color_override = hex_str
+        self.pane_state.cbar_color_override = hex_str
         self._build_scene()
 
     def _on_edge_width(self, w):

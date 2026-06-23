@@ -9,6 +9,7 @@ theme-action mapping.
 """
 from collections.abc import Callable
 
+from qtpy.QtCore import Qt
 from qtpy.QtGui import QKeySequence
 from qtpy.QtWidgets import QAction, QMainWindow, QMessageBox
 
@@ -78,6 +79,9 @@ def build_menubar(
         act = QAction(label, window, checkable=True)
         act.setChecked(n_panes == 1)
         act.setShortcut(QKeySequence(shortcut))
+        # See "Reset cameras" below — VTK widgets swallow the WindowShortcut
+        # context; ApplicationShortcut makes the shortcut work everywhere.
+        act.setShortcutContext(Qt.ApplicationShortcut)
         if on_pane_layout is not None:
             act.triggered.connect(
                 lambda _checked, n=n_panes: on_pane_layout(n)
@@ -94,6 +98,10 @@ def build_menubar(
         view_menu.addSeparator()
         reset_act = QAction("Reset cameras", window)
         reset_act.setShortcut(QKeySequence("Ctrl+R"))
+        # ApplicationShortcut so the key fires even when the VTK widget
+        # has focus (the default WindowShortcut context lets pyvistaqt's
+        # interactor swallow the keystroke before the menu sees it).
+        reset_act.setShortcutContext(Qt.ApplicationShortcut)
         reset_act.triggered.connect(lambda: on_reset_cameras())
         view_menu.addAction(reset_act)
 

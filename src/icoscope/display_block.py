@@ -154,14 +154,27 @@ class _DisplayBlock(QWidget):
         self.center_cb.toggled.connect(self.center_zero_toggled)
         cf.addRow(self.center_cb)
 
+        # Colorbar toggle + text-colour picker share one row so the colour
+        # control sits visually next to what it affects (per-pane).
+        bar_row = QHBoxLayout()
+        bar_row.setContentsMargins(0, 0, 0, 0)
+        bar_row.setSpacing(6)
         self.bar_cb = QCheckBox("Colorbar")
         self.bar_cb.setChecked(True)
         self.bar_cb.toggled.connect(self.colorbar_toggled)
-        cf.addRow(self.bar_cb)
+        bar_row.addWidget(self.bar_cb, stretch=1)
+        self.cbar_btn = ColorButton("#ffffff")
+        self.cbar_btn.setToolTip("Colorbar text colour")
+        self.cbar_btn.color_changed.connect(self.cbar_color_changed)
+        bar_row.addWidget(self.cbar_btn)
+        bar_wrap = QWidget()
+        bar_wrap.setLayout(bar_row)
+        cf.addRow(bar_wrap)
 
         # color-by defaults to "None" → cmap-related widgets start disabled
         self.center_cb.setEnabled(False)
         self.bar_cb.setEnabled(False)
+        self.cbar_btn.setEnabled(False)
         self.cmap_box.setEnabled(False)
 
         return col
@@ -206,21 +219,6 @@ class _DisplayBlock(QWidget):
         self.edges_cb, self.edge_btn, self.edge_width = toggle_color_row(
             "Cell edges", self.edges_toggled, self.edge_color_changed,
             self.edge_width_changed, default_width=0.6, checked=True)
-
-        # Colorbar text colour. No toggle (the colorbar's on/off lives in
-        # Coloring per pane) and no width spinbox — just a label + colour
-        # picker that overrides the theme default for every visible pane.
-        cbar_row = QHBoxLayout()
-        cbar_row.setContentsMargins(0, 0, 0, 0)
-        cbar_row.setSpacing(6)
-        cbar_lbl = QLabel("Colorbar text")
-        cbar_row.addWidget(cbar_lbl, stretch=1)
-        self.cbar_btn = ColorButton("#ffffff")
-        self.cbar_btn.color_changed.connect(self.cbar_color_changed)
-        cbar_row.addWidget(self.cbar_btn)
-        cbar_wrap = QWidget()
-        cbar_wrap.setLayout(cbar_row)
-        ol.addWidget(cbar_wrap)
 
         return ov
 
