@@ -288,6 +288,14 @@ class MainWindow(QMainWindow):
 
     # ── geometry ──────────────────────────────────
     def _to_polydata(self):
+        """Build a fresh PolyData from ``self.verts/cells/scalars``.
+
+        Expensive on a 64 k-cell mesh because of the Python loop assembling
+        the ``faces_flat`` array. Only call when geometry actually changed
+        (verts or cells differ); for scalar-only swaps (slider scrubs) use
+        :meth:`_update_scalars_only`, which mutates the existing PolyData
+        in place and avoids the loop.
+        """
         faces_flat = []
         for c in self.cells:
             faces_flat.append(len(c))
@@ -296,6 +304,24 @@ class MainWindow(QMainWindow):
         if self.scalars is not None:
             mesh.cell_data["scalars"] = np.asarray(self.scalars)
         return mesh
+
+    def _update_scalars_only(self) -> None:
+        """Swap the active scalars on the cached PolyData in place.
+
+        Used in the slider-scrub hot path where geometry hasn't changed
+        between frames. Roughly an order of magnitude faster than
+        rebuilding the PolyData since it skips the ``faces_flat`` loop and
+        the VTK PolyData construction.
+        """
+        if self._mesh is None:
+            # First-time safety net; nothing cached to mutate.
+            self._mesh = self._to_polydata()
+            return
+        if self.scalars is None:
+            if "scalars" in self._mesh.cell_data:
+                del self._mesh.cell_data["scalars"]
+        else:
+            self._mesh.cell_data["scalars"] = np.asarray(self.scalars)
 
     def _clim(self):
         if self.scalars is None or not self.state.center_zero:
@@ -683,8 +709,9 @@ class MainWindow(QMainWindow):
                 self.panel.file_tab.set_levels(None)
             self._file_state.level_index = 0
         self._refresh_scalars()
-        self._mesh = self._to_polydata()
-        self.picker.invalidate_locator()
+        # Color-by changes only the scalar field — geometry (and the picker
+        # locator built from it) stay valid, so just swap scalars in place.
+        self._update_scalars_only()
         # The displayed picker value is for the *previous* field's units; clear
         # it (the lon/lat + highlight stay — the geometric pick is still
         # meaningful, the user just needs to re-pick to update the value).
@@ -1133,8 +1160,9 @@ class MainWindow(QMainWindow):
             self.panel.file_tab.set_time_label(idx, meta["shape"][0])
         self._refresh_scalars()
         self._refresh_picked_value()
-        self._mesh = self._to_polydata()
-        self.picker.invalidate_locator()
+        # Slider scrub — geometry is unchanged, so swap scalars in place
+        # (and skip the picker-locator invalidation; it's built from cells).
+        self._update_scalars_only()
         self._build_scene()
 
     def _on_level_changed(self, idx):
@@ -1143,8 +1171,7 @@ class MainWindow(QMainWindow):
         self._file_state.level_index = idx
         self._refresh_scalars()
         self._refresh_picked_value()
-        self._mesh = self._to_polydata()
-        self.picker.invalidate_locator()
+        self._update_scalars_only()
         self._build_scene()
 
     def _on_play_toggled(self, on):
