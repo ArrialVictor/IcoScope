@@ -50,10 +50,12 @@ class Picker(QObject):
                                pickable=False, reset_camera=False)
 
     def clear_highlight(self) -> None:
-        """Remove the highlight outline and clear the lon/lat status widget."""
+        """Remove the highlight outline and clear lon/lat + value status widgets."""
         self._plotter.remove_actor("highlight", reset_camera=False, render=False)
         if hasattr(self._window, "lon_box"):
             self._window._clear_lonlat()
+        if hasattr(self._window, "value_label"):
+            self._window._clear_cell_value()
 
     def invalidate_locator(self) -> None:
         """Drop the cached vtkCellLocator (call after the mesh changes)."""
@@ -98,6 +100,8 @@ class Picker(QObject):
             ray = p_world - cam_pos
             n = np.linalg.norm(ray)
             if n == 0:
+                self.clear_highlight()
+                self._plotter.render()
                 return
             ray /= n
 
@@ -105,11 +109,12 @@ class Picker(QObject):
             b = float(np.dot(cam_pos, ray))
             c = float(np.dot(cam_pos, cam_pos)) - 1.0
             disc = b * b - c
-            if disc < 0:
-                return                 # ray misses sphere
-            t = -b - np.sqrt(disc)     # closer (front) intersection
-            if t <= 0:
-                return                 # behind camera
+            if disc < 0 or (t := -b - np.sqrt(disc)) <= 0:
+                # Ray misses the sphere (or front-hit is behind the camera) —
+                # treat as an explicit deselect: clear highlight + lon/lat + value.
+                self.clear_highlight()
+                self._plotter.render()
+                return
             hit = cam_pos + t * ray
 
             # find the cell containing this surface point
@@ -122,6 +127,8 @@ class Picker(QObject):
             loc.FindClosestPoint(list(hit), closest, gcell, cell_id, sub_id, dist2)
             idx = int(cell_id)
             if idx < 0 or idx >= len(self._window.cells):
+                self.clear_highlight()
+                self._plotter.render()
                 return
 
             self.highlight_cell(idx)
@@ -129,6 +136,8 @@ class Picker(QObject):
             lat = float(np.degrees(np.arcsin(np.clip(hit[2], -1, 1))))
             lon = float(np.degrees(np.arctan2(hit[1], hit[0])))
             self._window._set_lonlat(lon, lat)
+            if hasattr(self._window, "value_label"):
+                self._window._set_cell_value(idx, lon=lon, lat=lat)
             self._plotter.render()
 
         self._plotter.enable_point_picking(

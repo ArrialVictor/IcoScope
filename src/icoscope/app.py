@@ -100,6 +100,10 @@ class MainWindow(QMainWindow):
         self.cells = cells
         self.centers = np.asarray(centers)
         self.scalars = None           # what we actually render
+        # Last successful pick: (cell_idx, lon, lat) or None. Used to refresh
+        # the status-bar value display after time/level slider scrubs without
+        # forcing the user to re-pick.
+        self._last_pick: tuple[int, float, float] | None = None
         self.file_path = None
         self.n = initial_n
         self.max_relax_iters = 200 if relax else 0
@@ -423,7 +427,7 @@ class MainWindow(QMainWindow):
         h = QHBoxLayout(w)
         h.setContentsMargins(4, 0, 4, 0)
         h.setSpacing(4)
-        h.addWidget(QLabel("lon"))
+        h.addWidget(QLabel("Lon"))
         self.lon_box = QDoubleSpinBox()
         self.lon_box.setRange(self.LON_SENTINEL, 180)
         self.lon_box.setDecimals(2)
@@ -433,7 +437,7 @@ class MainWindow(QMainWindow):
         self.lon_box.setKeyboardTracking(False)
         self.lon_box.setValue(self.LON_SENTINEL)
         h.addWidget(self.lon_box)
-        h.addWidget(QLabel("lat"))
+        h.addWidget(QLabel("Lat"))
         self.lat_box = QDoubleSpinBox()
         self.lat_box.setRange(self.LAT_SENTINEL, 90)
         self.lat_box.setDecimals(2)
@@ -443,6 +447,11 @@ class MainWindow(QMainWindow):
         self.lat_box.setKeyboardTracking(False)
         self.lat_box.setValue(self.LAT_SENTINEL)
         h.addWidget(self.lat_box)
+        # Value label — populated by _set_cell_value when the picker hits a
+        # cell and the active field has a meaningful scalar. Hidden until then.
+        self.value_label = QLabel("")
+        self.value_label.setVisible(False)
+        h.addWidget(self.value_label)
         self.statusBar().addPermanentWidget(w)
         # editing either field flies the camera
         self.lon_box.editingFinished.connect(self._fly_to_lonlat)
@@ -459,6 +468,79 @@ class MainWindow(QMainWindow):
 
     def _clear_lonlat(self):
         self._set_lonlat(None, None)
+
+    def _current_color_by_units(self) -> str:
+        """Units string for the active field — '' if unknown."""
+        from .display_block import SYNTHETIC_UNITS
+        name = self.state.color_by
+        if name == "None":
+            return ""
+        # File-tab fields have units in their FieldMeta; synthetic schemes use
+        # the hardcoded SYNTHETIC_UNITS table.
+        meta = self._file_state.file_fields.get(name) if self.file_path else None
+        if meta is not None:
+            return str(meta.get("units", "") or "")
+        return SYNTHETIC_UNITS.get(name, "")
+
+    @staticmethod
+    def _format_cell_value(value, units: str) -> tuple[str, str]:
+        """Forward to :func:`icoscope.formatters.format_cell_value`.
+
+        Kept as a method so existing call sites in this module stay short.
+        """
+        from .formatters import format_cell_value
+        return format_cell_value(value, units)
+
+    def _set_cell_value(self, cell_idx, lon=None, lat=None):
+        """Update the status-bar value label for the picked cell.
+
+        Pass ``cell_idx=None`` to clear. ``lon``/``lat`` are the exact
+        click-resolved coordinates (in degrees); when provided they go
+        into the tooltip alongside the full-precision value, and the
+        ``(cell_idx, lon, lat)`` tuple is cached so ``_refresh_picked_value``
+        can re-display after time / level scrubs.
+        """
+        if (cell_idx is None or self.scalars is None
+                or self.state.color_by == "None"):
+            self.value_label.setText("")
+            self.value_label.setToolTip("")
+            self.value_label.setVisible(False)
+            self._last_pick = None
+            return
+        if cell_idx >= len(self.scalars):
+            # Mesh changed underneath us — the saved cell index doesn't
+            # apply any more. Drop the pick rather than silently showing
+            # a wrong value.
+            self._last_pick = None
+            self.value_label.setText("")
+            self.value_label.setToolTip("")
+            self.value_label.setVisible(False)
+            return
+        val = self.scalars[cell_idx]
+        units = self._current_color_by_units()
+        short, full = self._format_cell_value(val, units)
+        self.value_label.setText(short)
+        tip = full
+        if lon is not None and lat is not None:
+            tip = f"{full}\ncell {cell_idx}, lon {lon:.6f}°, lat {lat:.6f}°"
+            self._last_pick = (cell_idx, lon, lat)
+        self.value_label.setToolTip(tip)
+        self.value_label.setVisible(True)
+
+    def _clear_cell_value(self):
+        self._set_cell_value(None)
+
+    def _refresh_picked_value(self):
+        """Re-display the value for the currently-picked cell after scalars change.
+
+        Called from the time / level slider handlers — the highlight ring and
+        lon/lat stay put, but the value at that cell is now from a different
+        slice, so the displayed number needs to refresh.
+        """
+        if self._last_pick is None:
+            return
+        idx, lon, lat = self._last_pick
+        self._set_cell_value(idx, lon=lon, lat=lat)
 
     def _fly_to_lonlat(self):
         lon_v = self.lon_box.value()
@@ -603,6 +685,11 @@ class MainWindow(QMainWindow):
         self._refresh_scalars()
         self._mesh = self._to_polydata()
         self.picker.invalidate_locator()
+        # The displayed picker value is for the *previous* field's units; clear
+        # it (the lon/lat + highlight stay — the geometric pick is still
+        # meaningful, the user just needs to re-pick to update the value).
+        if hasattr(self, "value_label"):
+            self._clear_cell_value()
         self._build_scene()
 
     def _on_colorbar(self, on):
@@ -1045,6 +1132,7 @@ class MainWindow(QMainWindow):
         if meta:
             self.panel.file_tab.set_time_label(idx, meta["shape"][0])
         self._refresh_scalars()
+        self._refresh_picked_value()
         self._mesh = self._to_polydata()
         self.picker.invalidate_locator()
         self._build_scene()
@@ -1054,6 +1142,7 @@ class MainWindow(QMainWindow):
             return
         self._file_state.level_index = idx
         self._refresh_scalars()
+        self._refresh_picked_value()
         self._mesh = self._to_polydata()
         self.picker.invalidate_locator()
         self._build_scene()
