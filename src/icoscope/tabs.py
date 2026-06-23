@@ -116,6 +116,22 @@ _DISPLAY_SIGNALS_BASE = (
 _DISPLAY_SIGNALS_TIME = ("time_changed", "play_toggled", "play_speed_changed",
                          "level_changed")
 
+# Signal subsets used by FileTab's mode-split blocks (Global vs Pane).
+# Coloring + per-pane animation widgets live on the pane block; overlays /
+# autorotate / playback speed / export live on the global block.
+_DISPLAY_SIGNALS_PANE = (
+    "color_by_changed", "cmap_changed", "colorbar_toggled", "center_zero_toggled",
+    "time_changed", "play_toggled", "level_changed",
+)
+_DISPLAY_SIGNALS_GLOBAL = (
+    "coastlines_toggled", "graticule_toggled", "edges_toggled",
+    "coast_color_changed", "grat_color_changed", "edge_color_changed",
+    "coast_width_changed", "grat_width_changed", "edge_width_changed",
+    "autorotate_toggled",
+    "play_speed_changed",
+    "screenshot_clicked", "vector_export_clicked",
+)
+
 
 class IcoTab(QWidget):
     """Ico tab: synthetic Goldberg grid params + display controls (no time)."""
@@ -503,16 +519,53 @@ class FileTab(QWidget):
         self.file_attrs_label.setVisible(False)
         v.addWidget(self.file_attrs_label)
 
-        # ── Display block (with time slider) ───────
-        self.display = _DisplayBlock(cmaps, with_time=True)
+        # ── Mode header + split Display blocks ─────
+        # In multi-pane mode the side panel swaps between "Global settings"
+        # (overlays / autorotate / export) when no pane is selected and
+        # "Pane N settings" (Color by / time / level) when one is. We host
+        # both blocks here and show exactly one at a time via set_mode().
+        self.mode_label = QLabel("Pane 1 settings")
+        self.mode_label.setStyleSheet("font-weight: 600; padding-top: 6px;")
+        v.addWidget(self.mode_label)
+
+        self.display_global = _DisplayBlock(cmaps, with_time=False, mode="global")
+        v.addWidget(self.display_global)
+        self.display_global.setVisible(False)
+
+        self.display_pane = _DisplayBlock(cmaps, with_time=True, mode="pane")
         # File tab's Color by is only ever the loaded file's fields. Replace
         # the default synthetic options that _DisplayBlock pre-populates.
-        self.display.set_color_by_items(["None"])
-        v.addWidget(self.display)
-        _forward_signals(self, self.display,
-                         _DISPLAY_SIGNALS_BASE + _DISPLAY_SIGNALS_TIME)
+        self.display_pane.set_color_by_items(["None"])
+        v.addWidget(self.display_pane)
+
+        # Forward signals selectively. The pane block carries Coloring +
+        # Time + Level; the global block carries Overlays + Autorotate +
+        # Speed + Export. App connects the signals at the tab level; the
+        # signal source is the right block by construction.
+        _forward_signals(self, self.display_pane, _DISPLAY_SIGNALS_PANE)
+        _forward_signals(self, self.display_global, _DISPLAY_SIGNALS_GLOBAL)
+
+        # `display` aliases whichever block carries Coloring (the pane
+        # block); used by the existing setter forwarders that target
+        # color_by / cmap / time / level.
+        self.display = self.display_pane
 
         v.addStretch(1)
+
+    def set_mode(self, mode: str, pane_idx: int = 0) -> None:
+        """Switch the panel content between Global and per-pane.
+
+        ``mode`` is ``"global"`` or ``"pane"``. ``pane_idx`` is only used
+        in pane mode to label the header (1-indexed in user-facing text).
+        """
+        if mode == "global":
+            self.mode_label.setText("Global settings")
+            self.display_global.setVisible(True)
+            self.display_pane.setVisible(False)
+        else:
+            self.mode_label.setText(f"Pane {pane_idx + 1} settings")
+            self.display_global.setVisible(False)
+            self.display_pane.setVisible(True)
 
     # ── proxy display methods ────────────────────────────────────────────
 
@@ -529,16 +582,16 @@ class FileTab(QWidget):
         self.display.set_color_by_items(items)
 
     def set_edge_color(self, hex_str: str) -> None:
-        """Forward to the inner display block."""
-        self.display.set_edge_color(hex_str)
+        """Forward to the global display block (overlay swatches live there)."""
+        self.display_global.set_edge_color(hex_str)
 
     def set_coast_color(self, hex_str: str) -> None:
-        """Forward to the inner display block."""
-        self.display.set_coast_color(hex_str)
+        """Forward to the global display block (overlay swatches live there)."""
+        self.display_global.set_coast_color(hex_str)
 
     def set_grat_color(self, hex_str: str) -> None:
-        """Forward to the inner display block."""
-        self.display.set_grat_color(hex_str)
+        """Forward to the global display block (overlay swatches live there)."""
+        self.display_global.set_grat_color(hex_str)
 
     def set_time_axis(self, n_steps: int, times=None) -> None:
         """Forward to the inner display block."""

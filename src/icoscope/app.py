@@ -748,21 +748,72 @@ class MainWindow(QMainWindow):
     def _on_pane_clicked(self, idx: int) -> None:
         """User left-clicked pane ``idx``. Promote it to the selected pane.
 
-        Updates the visible selection ring and remembers the index so the
-        side panel's per-pane controls (Color by, level, etc.) target this
-        pane. The actual side-panel content swap lands in stage 6.
+        Updates the visible selection ring, swaps the File-tab side panel
+        to per-pane mode for that pane, and triggers a refresh so the
+        per-pane widgets reflect the new pane's :class:`PaneState`.
         """
         if idx == self._selected_pane:
             # Re-selecting the same pane is a no-op (avoids toggling off
             # during normal click-to-rotate; explicit deselect is via Esc).
             return
-        self._selected_pane = idx
-        self._pane_container.set_selected(idx)
+        self._select_pane(idx)
 
     def _select_pane(self, idx: int | None) -> None:
-        """Programmatic selection helper (used by Escape and tab switches)."""
+        """Programmatic selection helper (used by clicks, Escape, tab switches).
+
+        Updates the selection ring, syncs the File-tab side panel between
+        Global / per-pane mode, and pushes the new pane's state into the
+        relevant widgets when entering pane mode.
+        """
         self._selected_pane = idx
         self._pane_container.set_selected(idx)
+        # Side-panel mode swap (File tab only — Ico/LonLat are always
+        # single-pane and don't have the mode header).
+        if idx is None:
+            self.panel.file_tab.set_mode("global")
+        else:
+            self.panel.file_tab.set_mode("pane", pane_idx=idx)
+            self._sync_pane_widgets(idx)
+
+    def _sync_pane_widgets(self, pane_idx: int) -> None:
+        """Push pane[idx]'s state into the File-tab per-pane widgets.
+
+        Called on selection change so the user sees the right colormap,
+        Color-by choice, slider positions, etc. — without the widgets
+        firing their `*_changed` signals back at us (each is blocked).
+        """
+        if not self._file_cache:
+            # No file loaded — nothing meaningful to sync onto the per-pane
+            # widgets. set_mode() has already updated the header.
+            return
+        pane = self.state.panes[pane_idx]
+        ft = self.panel.file_tab
+        ft.set_color_by(pane.color_by)
+        ft.set_cmap(pane.cmap)
+        block = ft.display_pane
+        block.center_cb.blockSignals(True)
+        block.center_cb.setChecked(pane.center_zero)
+        block.center_cb.blockSignals(False)
+        block.bar_cb.blockSignals(True)
+        block.bar_cb.setChecked(pane.colorbar_on)
+        block.bar_cb.blockSignals(False)
+        meta = self._file_state.file_fields.get(pane.color_by)
+        if meta and meta.get("time_varying"):
+            n_t = meta["shape"][0]
+            ft.set_time_axis(n_t, times=self._times_for(meta))
+            slider = block.time_slider
+            slider.blockSignals(True)
+            slider.setValue(min(max(pane.time_index, 0), n_t - 1))
+            slider.blockSignals(False)
+            ft.set_time_label(slider.value())
+        if meta and meta.get("n_levels", 0) > 1 and self._file_state.file_levels is not None:
+            n_l = meta["n_levels"]
+            ft.set_levels(self._file_state.file_levels)
+            slider = block.level_slider
+            slider.blockSignals(True)
+            slider.setValue(min(max(pane.level_index, 0), n_l - 1))
+            slider.blockSignals(False)
+            ft.set_level_label(slider.value())
 
     def _on_pane_layout(self, n_panes: int) -> None:
         """User picked View → Pane layout → Single / 1×2 / 2×2.
