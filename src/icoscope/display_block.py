@@ -67,6 +67,9 @@ class _DisplayBlock(QWidget):
     play_toggled        = Signal(bool)
     play_speed_changed  = Signal(int)
 
+    # Vertical level (only emitted if with_time=True; gated by current field)
+    level_changed       = Signal(int)
+
     # Export
     screenshot_clicked     = Signal()
     vector_export_clicked  = Signal()
@@ -75,6 +78,8 @@ class _DisplayBlock(QWidget):
                  parent: QWidget | None = None):
         super().__init__(parent)
         self.with_time = with_time
+        self._levels_pa = None  # populated by set_levels for file fields
+        self._levels_are_indices = False
         v = QVBoxLayout(self)
         v.setContentsMargins(0, 0, 0, 0)
         v.addWidget(self._build_coloring_group(cmaps))
@@ -223,6 +228,29 @@ class _DisplayBlock(QWidget):
         al.addWidget(self.speed_row)
         self.speed_row.setVisible(False)
 
+        # Vertical-level slider: shown only when the active field has a
+        # presnivs dim. Label shows the pressure value (hPa) at the current
+        # index so users can navigate by altitude, not just slider position.
+        self.level_row = QWidget()
+        lrow = QHBoxLayout(self.level_row)
+        lrow.setContentsMargins(0, 0, 0, 0)
+        lrow.setSpacing(6)
+        level_lbl = QLabel("Level")
+        level_lbl.setFixedHeight(ROW_H)
+        lrow.addWidget(level_lbl)
+        self.level_slider = QSlider(Qt.Horizontal)
+        self.level_slider.setRange(0, 0)
+        self.level_slider.setFixedHeight(ROW_H)
+        self.level_slider.setStyleSheet(SLIDER_STYLE)
+        self.level_slider.valueChanged.connect(self._on_level_slider_changed)
+        lrow.addWidget(self.level_slider, stretch=1)
+        self.level_value_label = QLabel("—")
+        self.level_value_label.setFixedSize(60, ROW_H)
+        self.level_value_label.setAlignment(Qt.AlignVCenter | Qt.AlignRight)
+        lrow.addWidget(self.level_value_label)
+        al.addWidget(self.level_row)
+        self.level_row.setVisible(False)
+
         return anim
 
     def _build_export_group(self) -> QGroupBox:
@@ -300,3 +328,50 @@ class _DisplayBlock(QWidget):
     def _on_play_toggled(self, on):
         self.play_btn.setText("⏸" if on else "▶")
         self.play_toggled.emit(on)
+
+    def set_levels(self, levels_pa) -> None:
+        """Configure the level slider with ``presnivs`` values (Pa), or hide it.
+
+        Pass ``None`` or a length-≤1 array to hide the slider (used when the
+        active field has no vertical dim, or when no file is loaded). If the
+        values look like a contiguous integer index sequence (subsetted file
+        where the coord var was dropped), labels show ``level k`` instead of
+        a pressure.
+        """
+        if not self.with_time:
+            return
+        if levels_pa is None or len(levels_pa) <= 1:
+            self.level_row.setVisible(False)
+            self._levels_pa = None
+            self._levels_are_indices = False
+            return
+        import numpy as np
+        self._levels_pa = np.asarray(levels_pa, dtype=float)
+        self._levels_are_indices = bool(np.array_equal(
+            self._levels_pa, np.arange(len(self._levels_pa), dtype=float)))
+        self.level_row.setVisible(True)
+        self.level_slider.blockSignals(True)
+        self.level_slider.setRange(0, len(self._levels_pa) - 1)
+        self.level_slider.setValue(0)
+        self.level_slider.blockSignals(False)
+        self.set_level_label(0)
+
+    def set_level_label(self, idx: int) -> None:
+        """Update the value label next to the level slider for index ``idx``."""
+        if not self.with_time or self._levels_pa is None:
+            return
+        if self._levels_are_indices:
+            self.level_value_label.setText(f"level {idx}")
+            return
+        val_pa = float(self._levels_pa[idx])
+        # Pressure is conventionally shown in hPa; one decimal so adjacent
+        # upper-atmosphere levels (e.g. 1.4 hPa vs 1.0 hPa) stay distinct.
+        # Fall back to Pa below 100 Pa where .1 hPa would underflow to 0.0.
+        if val_pa >= 100.0:
+            self.level_value_label.setText(f"{val_pa / 100.0:.1f} hPa")
+        else:
+            self.level_value_label.setText(f"{val_pa:.1f} Pa")
+
+    def _on_level_slider_changed(self, idx: int) -> None:
+        self.set_level_label(idx)
+        self.level_changed.emit(idx)

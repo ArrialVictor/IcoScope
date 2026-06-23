@@ -199,20 +199,25 @@ def _make_dyn3d_nc_with_extras(path: Path, iim: int, jjm: int) -> None:
         ds.createVariable("controle", "f8", ("ncontrol",))[:] = np.zeros(100)
 
 
-def test_load_dyn3d_skips_vertical_and_descriptive_vars():
-    """Vertical-profile fields and descriptive vars are deliberately filtered out."""
+def test_load_dyn3d_surfaces_vertical_and_skips_descriptive_vars():
+    """Vertical-profile fields are now surfaced (with n_levels); descriptive vars stay filtered."""
     with tempfile.NamedTemporaryFile(suffix=".nc", delete=False) as f:
         path = Path(f.name)
     try:
         _make_dyn3d_nc_with_extras(path, iim=6, jjm=4)
         _, cells, _, fields = load_grid(path)
         assert len(cells) == 6 * 4
-        # Only the two flat (rlatu, rlonv) fields survive
-        assert set(fields) == {"tas", "ps"}
+        # Both flat and vertical fields surface; descriptive ones stay out.
+        assert set(fields) == {"tas", "ps", "u", "temp4d"}
         assert fields["tas"]["time_varying"] is False
+        assert fields["tas"]["n_levels"] == 0
         assert fields["ps"]["time_varying"] is True
-        # Explicitly check the skipped ones aren't there
-        for skipped in ("u", "temp4d", "global_mean", "controle", "presnivs",
+        assert fields["ps"]["n_levels"] == 0
+        assert fields["u"]["time_varying"] is False
+        assert fields["u"]["n_levels"] == 5
+        assert fields["temp4d"]["time_varying"] is True
+        assert fields["temp4d"]["n_levels"] == 5
+        for skipped in ("global_mean", "controle", "presnivs",
                         "time", "rlonu", "rlatu", "rlonv", "rlatv"):
             assert skipped not in fields, f"{skipped!r} should have been skipped"
     finally:

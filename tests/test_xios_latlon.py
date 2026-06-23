@@ -11,6 +11,7 @@ from icoscope.loader import (
     _is_xios_latlon,
     load_grid,
     read_field,
+    read_levels,
 )
 from icoscope.lonlat import build_mesh_from_centers
 
@@ -72,8 +73,26 @@ def _make_xios_nc(
             ds.createVariable("presnivs", "f8", ("presnivs",))[:] = [
                 100000.0, 50000.0, 10000.0, 1000.0,
             ]
+            # Per-level value pattern: level k fills with constant k, so the
+            # level-slice test can verify k was picked from a (t, k, lat, lon)
+            # field unambiguously. Polar rows still override to ±999 so the
+            # flatten path is exercised.
             v = ds.createVariable("temp3d", "f8", ("presnivs", "lat", "lon"))
-            v[:] = np.zeros((4, nlat, nlon))
+            data3 = np.zeros((4, nlat, nlon))
+            for k in range(4):
+                data3[k, :, :] = k
+                data3[k, 0, :] = 999.0 if south_first else -999.0
+                data3[k, -1, :] = -999.0 if south_first else 999.0
+            v[:] = data3
+            if with_time:
+                v4 = ds.createVariable(
+                    "temp4d", "f8", ("time_counter", "presnivs", "lat", "lon"))
+                # Per-(t,k) constant t*100 + k so each slice is distinguishable
+                data4 = np.zeros((3, 4, nlat, nlon))
+                for t in range(3):
+                    for k in range(4):
+                        data4[t, k, :, :] = t * 100 + k
+                v4[:] = data4
 
 
 def test_build_mesh_from_centers_shapes():
@@ -169,13 +188,17 @@ def test_load_grid_xios_path():
         assert fields["slp"]["kind"] == "xios"
 
 
-def test_load_grid_xios_skips_3d_fields():
+def test_load_grid_xios_surfaces_3d_fields():
+    """3-D (presnivs, lat, lon) fields are now surfaced with n_levels set."""
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "x.nc"
         _make_xios_nc(path, with_3d=True)
         _, _, _, fields = load_grid(path)
-        assert "temp3d" not in fields
         assert "slp" in fields
+        assert fields["slp"]["n_levels"] == 0
+        assert "temp3d" in fields
+        assert fields["temp3d"]["n_levels"] == 4
+        assert fields["temp3d"]["time_varying"] is False
 
 
 def test_read_field_xios_static():
@@ -203,3 +226,123 @@ def test_read_field_xios_time_slice():
         assert np.all(v2[:8] == 2999.0)
         assert np.all(v0[-8:] == -999.0)
         assert np.all(v2[-8:] == 1001.0)
+
+
+def test_read_field_xios_level_slice_3d():
+    """For a (presnivs, lat, lon) field, level_index picks the right level."""
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "x.nc"
+        _make_xios_nc(path, nlon=8, nlat=6, south_first=True, with_3d=True)
+        v0 = read_field(path, "temp3d", level_index=0)
+        v2 = read_field(path, "temp3d", level_index=2)
+        # Interior cells (not the polar ±999 overrides) should equal the level index.
+        assert v0[10] == 0.0
+        assert v2[10] == 2.0
+
+
+def test_read_field_xios_level_and_time_slice_4d():
+    """For (time, presnivs, lat, lon) the slice order is time-then-level."""
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "x.nc"
+        _make_xios_nc(path, nlon=8, nlat=6, south_first=True,
+                      with_time=True, with_3d=True)
+        v_t1_k2 = read_field(path, "temp4d", time_index=1, level_index=2)
+        # Constant 1*100 + 2 = 102 everywhere (no polar overrides for temp4d)
+        assert np.all(v_t1_k2 == 102.0)
+
+
+def test_read_levels_returns_presnivs():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "x.nc"
+        _make_xios_nc(path, with_3d=True)
+        levels = read_levels(path)
+        np.testing.assert_array_equal(levels, [100000.0, 50000.0, 10000.0, 1000.0])
+
+
+def test_read_levels_none_when_absent():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "x.nc"
+        _make_xios_nc(path)
+        assert read_levels(path) is None
+
+
+def test_read_field_masked_array_becomes_nan():
+    """_FillValue should be replaced by NaN, not leak through as the sentinel."""
+    fv = np.float32(9.96921e36)
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "x.nc"
+        nlon, nlat = 8, 6
+        lon = np.linspace(0.0, 360.0, nlon, endpoint=False)
+        lat = np.linspace(-90.0, 90.0, nlat)
+        with Dataset(path, "w", format="NETCDF4") as ds:
+            ds.createDimension("lon", nlon)
+            ds.createDimension("lat", nlat)
+            ds.createVariable("lon", "f8", ("lon",))[:] = lon
+            ds.createVariable("lat", "f8", ("lat",))[:] = lat
+            v = ds.createVariable("slp", "f4", ("lat", "lon"), fill_value=fv)
+            arr = np.full((nlat, nlon), 100000.0, dtype=np.float32)
+            arr[2, 3] = fv  # masked cell
+            v[:] = arr
+        out = read_field(path, "slp")
+        assert not np.any(out == fv), "sentinel leaked through asarray"
+        assert np.any(np.isnan(out)), "masked cell should be NaN"
+
+
+def test_read_levels_falls_back_to_indices_without_coord_var():
+    """File with presnivs dim but no presnivs coord var: return integer indices."""
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "x.nc"
+        _make_xios_nc(path)  # no presnivs at all
+        with Dataset(path, "a") as ds:
+            ds.createDimension("presnivs", 5)
+            # Deliberately do NOT create a presnivs variable
+        levels = read_levels(path)
+        assert levels is not None
+        np.testing.assert_array_equal(levels, np.arange(5, dtype=float))
+
+
+def test_classify_var_accepts_one_dim_horizontal():
+    """_classify_var should work with 1-D horizontal (e.g. icosahedral (cell,))."""
+    from icoscope.loader import _classify_var
+    # Static field on cell
+    assert _classify_var(("cell",), ("cell",), 0) == (False, 0)
+    # Time-varying on cell
+    assert _classify_var(("time", "cell"), ("cell",), 0) == (True, 0)
+    # Vertical on cell
+    assert _classify_var(("presnivs", "cell"), ("cell",), 5) == (False, 5)
+    # Time + vertical on cell
+    assert _classify_var(("time", "presnivs", "cell"), ("cell",), 5) == (True, 5)
+
+
+def test_classify_var_accepts_capital_time():
+    """TIME_DIMS now includes 'Time'/'t' so WRF-style files aren't dropped."""
+    from icoscope.loader import _classify_var
+    assert _classify_var(("Time", "lat", "lon"), ("lat", "lon"), 0) == (True, 0)
+    assert _classify_var(("t", "lat", "lon"), ("lat", "lon"), 0) == (True, 0)
+
+
+def test_file_context_caches_sniffer_and_dataset():
+    """FileContext holds the Dataset open + cached sniffer flags."""
+    from icoscope.loader import FileContext
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "x.nc"
+        _make_xios_nc(path)
+        with FileContext(path) as ctx:
+            assert ctx.is_dyn3d is False
+            assert ctx.is_xios is True
+            assert ctx.xios_south_first is True   # _make_xios_nc default
+            assert ctx.ds is not None
+        # closed after context manager exit
+        assert ctx.ds is None
+
+
+def test_read_field_with_context_matches_no_context():
+    """read_field with and without context returns identical data."""
+    from icoscope.loader import FileContext
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "x.nc"
+        _make_xios_nc(path, with_time=True)
+        ref = read_field(path, "temp", time_index=2)
+        with FileContext(path) as ctx:
+            via_ctx = read_field(path, "temp", time_index=2, context=ctx)
+        np.testing.assert_array_equal(ref, via_ctx)

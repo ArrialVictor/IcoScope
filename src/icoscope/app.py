@@ -57,8 +57,11 @@ class _TabState:
     coast_width: float = 1.2
     grat_width: float = 0.6
     time_index: int = 0
+    level_index: int = 0
     # file-only fields
     file_fields: dict = field(default_factory=dict)
+    # presnivs (Pa) for the loaded file, or None if no vertical dim
+    file_levels: object = None
 
 
 class MainWindow(QMainWindow):
@@ -207,6 +210,7 @@ class MainWindow(QMainWindow):
         self.panel.file_tab.open_file_clicked.connect(self._on_open_file)
         self.panel.file_tab.close_file_clicked.connect(self._on_close_file)
         self.panel.file_tab.time_changed.connect(self._on_time_changed)
+        self.panel.file_tab.level_changed.connect(self._on_level_changed)
         self.panel.file_tab.play_toggled.connect(self._on_play_toggled)
         self.panel.file_tab.play_speed_changed.connect(self._on_play_speed_changed)
         self.panel.tabs.currentChanged.connect(self._on_tab_changed)
@@ -563,8 +567,13 @@ class MainWindow(QMainWindow):
             self.scalars = T
         elif color_by in file_fields and self.file_path:
             from .loader import read_field
-            self.scalars = read_field(self.file_path, color_by,
-                                      time_index=self._file_state.time_index)
+            ctx = self._file_cache.get("context") if self._file_cache else None
+            self.scalars = read_field(
+                self.file_path, color_by,
+                time_index=self._file_state.time_index,
+                level_index=self._file_state.level_index,
+                context=ctx,
+            )
         else:
             self.scalars = None
 
@@ -577,14 +586,20 @@ class MainWindow(QMainWindow):
             tab.display.center_cb.setEnabled(name != "None")
             tab.display.bar_cb.setEnabled(name != "None")
             tab.display.cmap_box.setEnabled(name != "None")
-        # configure the time slider if this is a time-varying field (File tab only)
+        # configure the time + level sliders for the active field (File tab only).
         meta = self._file_state.file_fields.get(name) if tab is self.panel.file_tab else None
-        if meta and meta.get("time_varying"):
-            self.panel.file_tab.set_time_steps(meta["shape"][0])
+        if tab is self.panel.file_tab:
+            if meta and meta.get("time_varying"):
+                self.panel.file_tab.set_time_steps(meta["shape"][0])
+            else:
+                self.panel.file_tab.set_time_steps(0)
             self._file_state.time_index = 0
-        elif tab is self.panel.file_tab:
-            self.panel.file_tab.set_time_steps(0)
-            self._file_state.time_index = 0
+            n_levels = meta.get("n_levels", 0) if meta else 0
+            if n_levels > 1 and self._file_state.file_levels is not None:
+                self.panel.file_tab.set_levels(self._file_state.file_levels)
+            else:
+                self.panel.file_tab.set_levels(None)
+            self._file_state.level_index = 0
         self._refresh_scalars()
         self._mesh = self._to_polydata()
         self.picker.invalidate_locator()
@@ -815,19 +830,35 @@ class MainWindow(QMainWindow):
         if not path:
             return
         try:
-            from .loader import load_grid
+            from .loader import FileContext, load_grid, read_levels
             verts, cells, centers, fields = load_grid(path)
+            levels = read_levels(path)
+            context = FileContext(path)
         except Exception as e:
             QMessageBox.critical(self, "Load failed", str(e))
             return
+        # Close any previous file's Dataset handle so we don't leak.
+        if self._file_cache is not None:
+            old_ctx = self._file_cache.get("context")
+            if old_ctx is not None:
+                old_ctx.close()
         self.file_path = path
         self._file_state.file_fields = fields
+        self._file_state.file_levels = levels
+        # Fresh file: reset selections so _activate_file_view's "preserve
+        # prior choice" path doesn't carry over a field/index from the
+        # previous file that may not exist or may be out-of-range here.
+        self._file_state.color_by = "None"
+        self._file_state.time_index = 0
+        self._file_state.level_index = 0
         self._file_cache = {
             "path": path,
             "verts": verts,
             "cells": cells,
             "centers": np.asarray(centers),
             "fields": fields,
+            "levels": levels,
+            "context": context,
         }
         self.panel.file_tab.set_file_loaded(True)
         self._sync_file_info(path)
@@ -860,8 +891,14 @@ class MainWindow(QMainWindow):
         """Drop the loaded file. Stays on the File tab — shows the empty sphere."""
         if not self.file_path:
             return
+        # Close the held-open Dataset before dropping the cache.
+        if self._file_cache is not None:
+            ctx = self._file_cache.get("context")
+            if ctx is not None:
+                ctx.close()
         self.file_path = None
         self._file_state.file_fields = {}
+        self._file_state.file_levels = None
         self._file_cache = None
         # File tab's Color by only ever lists file fields, never synthetic
         # options — on unload, just "None" remains.
@@ -875,6 +912,7 @@ class MainWindow(QMainWindow):
         self.panel.file_tab.display.bar_cb.setEnabled(False)
         self.panel.file_tab.display.cmap_box.setEnabled(False)
         self.panel.file_tab.set_time_steps(0)
+        self.panel.file_tab.set_levels(None)
         self.panel.file_tab.set_file_loaded(False)
         self.panel.file_tab.set_file_info()
         # File tab stays active; render the empty sphere. The spin timer
@@ -886,16 +924,61 @@ class MainWindow(QMainWindow):
         c = self._file_cache
         assert c is not None
         self.verts, self.cells, self.centers = c["verts"], c["cells"], c["centers"]
+        self._file_state.file_levels = c.get("levels")
         items = ["None"] + list(c["fields"].keys())
         self.panel.file_tab.set_color_by_items(items)
-        if c["fields"]:
-            first = next(iter(c["fields"].keys()))
-            self.panel.file_tab.set_color_by(first)
-            self._file_state.color_by = first
+        # Preserve the previously selected field on re-entry (tab switch back).
+        # Only fall back to the first field if there is no prior selection or
+        # it isn't in the current file's fields (e.g. after Open NetCDF on a
+        # different file).
+        prior = self._file_state.color_by
+        if prior in c["fields"]:
+            desired = prior
+        elif c["fields"]:
+            desired = next(iter(c["fields"].keys()))
         else:
-            self._file_state.color_by = "None"
-        # _on_color_by is what normally toggles these on/off, but set_color_by
-        # above blocks signals to avoid recursion. Sync them by hand so the
+            desired = "None"
+        self.panel.file_tab.set_color_by(desired)
+        self._file_state.color_by = desired
+        # Re-configure the time + level sliders for the chosen field and
+        # restore their saved positions (set_time_steps / set_levels reset
+        # the slider value to 0 — block signals so the restore doesn't fire
+        # _on_time_changed / _on_level_changed; the subsequent
+        # _apply_mesh_change call below rebuilds the scene once).
+        meta = c["fields"].get(desired)
+        # Guard against a degenerate empty-time dim (unlimited dim with zero
+        # records written): meta says time_varying=True but shape[0]==0 would
+        # produce slider.setValue(-1) and a nonsense label.
+        n_t = meta["shape"][0] if (meta and meta.get("time_varying")) else 0
+        if n_t > 1:
+            self.panel.file_tab.set_time_steps(n_t)
+            # Clamp the saved index in case the caller is recycling state
+            # across a different field/file (e.g. via _on_open_file).
+            t_idx = min(max(self._file_state.time_index, 0), n_t - 1)
+            self._file_state.time_index = t_idx
+            slider = self.panel.file_tab.display.time_slider
+            slider.blockSignals(True)
+            slider.setValue(t_idx)
+            slider.blockSignals(False)
+            self.panel.file_tab.set_time_label(t_idx, n_t)
+        else:
+            self.panel.file_tab.set_time_steps(0)
+            self._file_state.time_index = 0
+        if meta and meta.get("n_levels", 0) > 1 and self._file_state.file_levels is not None:
+            n_l = meta["n_levels"]
+            self.panel.file_tab.set_levels(self._file_state.file_levels)
+            l_idx = min(max(self._file_state.level_index, 0), n_l - 1)
+            self._file_state.level_index = l_idx
+            slider = self.panel.file_tab.display.level_slider
+            slider.blockSignals(True)
+            slider.setValue(l_idx)
+            slider.blockSignals(False)
+            self.panel.file_tab.set_level_label(l_idx)
+        else:
+            self.panel.file_tab.set_levels(None)
+            self._file_state.level_index = 0
+        # _on_color_by normally toggles these on/off, but set_color_by above
+        # blocks signals to avoid recursion. Sync them by hand so the
         # cmap/colorbar/center-zero widgets are usable as soon as a file
         # loads (via --file at startup, via Open NetCDF, or via tab-switch
         # back to File after a previous load).
@@ -961,6 +1044,15 @@ class MainWindow(QMainWindow):
         meta = self._file_state.file_fields.get(self._file_state.color_by)
         if meta:
             self.panel.file_tab.set_time_label(idx, meta["shape"][0])
+        self._refresh_scalars()
+        self._mesh = self._to_polydata()
+        self.picker.invalidate_locator()
+        self._build_scene()
+
+    def _on_level_changed(self, idx):
+        if idx == self._file_state.level_index:
+            return
+        self._file_state.level_index = idx
         self._refresh_scalars()
         self._mesh = self._to_polydata()
         self.picker.invalidate_locator()
@@ -1049,16 +1141,21 @@ def run(
     if file_path:
         # Load the file's mesh + fields as if the user had clicked Open in
         # the File tab. _on_open_file's logic is reused via the cache path.
-        from .loader import load_grid
+        from .loader import FileContext, load_grid, read_levels
         f_verts, f_cells, f_centers, fields = load_grid(file_path)
+        levels = read_levels(file_path)
+        context = FileContext(file_path)
         w.file_path = file_path
         w._file_state.file_fields = fields
+        w._file_state.file_levels = levels
         w._file_cache = {
             "path": file_path,
             "verts": f_verts,
             "cells": f_cells,
             "centers": np.asarray(f_centers),
             "fields": fields,
+            "levels": levels,
+            "context": context,
         }
         w.panel.file_tab.set_file_loaded(True)
         w._sync_file_info(file_path)
