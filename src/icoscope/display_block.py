@@ -196,27 +196,41 @@ class _DisplayBlock(QWidget):
             "  border: 1px solid #555; border-radius: 6px; }"
         )
 
+        # Time row spans two visual rows: [play] [slider] on top, and the
+        # full datetime label underneath. The bottom row gets unbounded
+        # horizontal space so the datetime can be shown in full
+        # (`YYYY-MM-DD HH:MM:SS · i/N`) without truncation.
         self.time_row = QWidget()
-        trow = QHBoxLayout(self.time_row)
-        trow.setContentsMargins(0, 0, 0, 0)
-        trow.setSpacing(6)
+        trow_outer = QVBoxLayout(self.time_row)
+        trow_outer.setContentsMargins(0, 0, 0, 0)
+        trow_outer.setSpacing(2)
+        trow_top = QHBoxLayout()
+        trow_top.setContentsMargins(0, 0, 0, 0)
+        trow_top.setSpacing(6)
         self.play_btn = QPushButton("▶")
         self.play_btn.setFixedSize(28, ROW_H)
         self.play_btn.setCheckable(True)
         self.play_btn.toggled.connect(self._on_play_toggled)
-        trow.addWidget(self.play_btn)
+        trow_top.addWidget(self.play_btn)
         self.time_slider = QSlider(Qt.Horizontal)
         self.time_slider.setRange(0, 0)
         self.time_slider.setFixedHeight(ROW_H)
         self.time_slider.setStyleSheet(SLIDER_STYLE)
         self.time_slider.valueChanged.connect(self.time_changed)
-        trow.addWidget(self.time_slider, stretch=1)
+        trow_top.addWidget(self.time_slider, stretch=1)
+        trow_outer.addLayout(trow_top)
+        # Second row: full-width datetime label, right-aligned so it sits
+        # under the slider's right edge — visually anchored to the cursor.
         self.time_label = QLabel("—")
-        self.time_label.setFixedSize(40, ROW_H)
         self.time_label.setAlignment(Qt.AlignVCenter | Qt.AlignRight)
-        trow.addWidget(self.time_label)
+        self.time_label.setStyleSheet("color: #888; font-size: 11px;")
+        trow_outer.addWidget(self.time_label)
         al.addWidget(self.time_row)
         self.time_row.setVisible(False)
+        # Datetime axis values for the currently-active field, if available.
+        # Set via set_time_axis(); None means "labels fall back to i/N".
+        self._times = None
+        self._n_time = 0
 
         self.speed_row = QWidget()
         srow = QHBoxLayout(self.speed_row)
@@ -311,28 +325,58 @@ class _DisplayBlock(QWidget):
         """Set the graticule-color swatch."""
         self.grat_btn.set_color(hex_str)
 
-    def set_time_steps(self, n_steps: int) -> None:
-        """Configure the time slider for a time-varying field, or hide it."""
+    def set_time_axis(self, n_steps: int, times=None) -> None:
+        """Configure the time slider for a time-varying field, or hide it.
+
+        ``times`` is the parsed datetime array (cftime objects) for the
+        active field's time axis, or ``None`` if unavailable (subsetted
+        file, unparseable units, etc.). When ``None``, labels fall back
+        to ``i / N``.
+        """
         if not self.with_time:
             return
         if n_steps and n_steps > 1:
+            self._n_time = n_steps
+            self._times = times
             self.time_row.setVisible(True)
             self.speed_row.setVisible(True)
             self.time_slider.blockSignals(True)
             self.time_slider.setRange(0, n_steps - 1)
             self.time_slider.setValue(0)
             self.time_slider.blockSignals(False)
-            self.time_label.setText(f"1/{n_steps}")
+            self.set_time_label(0)
             self.play_btn.setChecked(False)
         else:
+            self._n_time = 0
+            self._times = None
             self.time_row.setVisible(False)
             self.speed_row.setVisible(False)
             self.play_btn.setChecked(False)
 
-    def set_time_label(self, idx: int, total: int) -> None:
-        """Update the ``i/N`` label next to the time slider."""
-        if self.with_time:
-            self.time_label.setText(f"{idx+1}/{total}")
+    # Back-compat alias: the per-tab caller used to be set_time_steps(n).
+    # Keep it routed at the new datetime-aware setter so existing callers
+    # that don't have datetimes still work.
+    def set_time_steps(self, n_steps: int) -> None:
+        """Configure the slider with no datetime info (index-only labels)."""
+        self.set_time_axis(n_steps, times=None)
+
+    def set_time_label(self, idx: int) -> None:
+        """Update the line under the slider for sample index ``idx``."""
+        if not self.with_time or self._n_time <= 0:
+            return
+        suffix = f" · {idx + 1}/{self._n_time}"
+        if self._times is not None and 0 <= idx < len(self._times):
+            try:
+                stamp = self._times[idx].isoformat(sep=" ")
+            except (AttributeError, TypeError):
+                stamp = str(self._times[idx])
+            self.time_label.setText(stamp + suffix)
+            self.time_label.setToolTip("")
+        else:
+            self.time_label.setText(f"{idx + 1}/{self._n_time}")
+            self.time_label.setToolTip(
+                "time-axis values unavailable; showing sample indices"
+            )
 
     def _on_play_toggled(self, on):
         self.play_btn.setText("⏸" if on else "▶")

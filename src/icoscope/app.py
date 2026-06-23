@@ -260,6 +260,22 @@ class MainWindow(QMainWindow):
             return self.panel.file_tab
         return self.panel.lonlat_tab
 
+    # ── helpers ───────────────────────────────────
+    def _times_for(self, meta):
+        """Return the cached datetime array for the field's time axis, or None.
+
+        Looks up the active FileContext (held-open Dataset) and asks it for
+        ``meta["time_dim_name"]``'s parsed datetimes. Falls back to ``None``
+        when there is no context (Ico/LonLat tabs, file not loaded) or when
+        the axis has no coord variable.
+        """
+        if not meta or not meta.get("time_dim_name"):
+            return None
+        ctx = self._file_cache.get("context") if self._file_cache else None
+        if ctx is None:
+            return None
+        return ctx.get_times(meta["time_dim_name"])
+
     # ── colors ─────────────────────────────────────
     def _edge_color(self):
         return self.state.edge_color_override or THEMES[self.theme_name]["edge"]
@@ -698,9 +714,12 @@ class MainWindow(QMainWindow):
         meta = self._file_state.file_fields.get(name) if tab is self.panel.file_tab else None
         if tab is self.panel.file_tab:
             if meta and meta.get("time_varying"):
-                self.panel.file_tab.set_time_steps(meta["shape"][0])
+                self.panel.file_tab.set_time_axis(
+                    meta["shape"][0],
+                    times=self._times_for(meta),
+                )
             else:
-                self.panel.file_tab.set_time_steps(0)
+                self.panel.file_tab.set_time_axis(0)
             self._file_state.time_index = 0
             n_levels = meta.get("n_levels", 0) if meta else 0
             if n_levels > 1 and self._file_state.file_levels is not None:
@@ -1065,7 +1084,7 @@ class MainWindow(QMainWindow):
         # produce slider.setValue(-1) and a nonsense label.
         n_t = meta["shape"][0] if (meta and meta.get("time_varying")) else 0
         if n_t > 1:
-            self.panel.file_tab.set_time_steps(n_t)
+            self.panel.file_tab.set_time_axis(n_t, times=self._times_for(meta))
             # Clamp the saved index in case the caller is recycling state
             # across a different field/file (e.g. via _on_open_file).
             t_idx = min(max(self._file_state.time_index, 0), n_t - 1)
@@ -1074,7 +1093,7 @@ class MainWindow(QMainWindow):
             slider.blockSignals(True)
             slider.setValue(t_idx)
             slider.blockSignals(False)
-            self.panel.file_tab.set_time_label(t_idx, n_t)
+            self.panel.file_tab.set_time_label(t_idx)
         else:
             self.panel.file_tab.set_time_steps(0)
             self._file_state.time_index = 0
@@ -1157,7 +1176,7 @@ class MainWindow(QMainWindow):
         self._file_state.time_index = idx
         meta = self._file_state.file_fields.get(self._file_state.color_by)
         if meta:
-            self.panel.file_tab.set_time_label(idx, meta["shape"][0])
+            self.panel.file_tab.set_time_label(idx)
         self._refresh_scalars()
         self._refresh_picked_value()
         # Slider scrub — geometry is unchanged, so swap scalars in place
