@@ -214,6 +214,7 @@ class MainWindow(QMainWindow):
         # (pane 0) so single-pane behaviour is unchanged. Stage 3 adds the
         # View menu to switch between 1 / 1×2 / 2×2 layouts.
         self._pane_container = PaneContainer(self.splitter)
+        self._pane_container.pane_clicked.connect(self._on_pane_clicked)
         self.splitter.addWidget(self._pane_container)
         self.plotter = self._pane_container.pane(0).plotter
         self.panel = ControlPanel(CMAPS)
@@ -543,6 +544,9 @@ class MainWindow(QMainWindow):
     def _on_escape(self):
         self.picker.clear_highlight()
         self._clear_lonlat()
+        # Deselect any active multi-pane selection so the side panel can
+        # swap back to Global mode (stage 6 wires that up).
+        self._select_pane(None)
         if self.state.spin_on:
             self.state.spin_on = False
             self.playback.stop_spin()
@@ -741,6 +745,25 @@ class MainWindow(QMainWindow):
         self.plotter.render()
 
     # ── slots ─────────────────────────────────────
+    def _on_pane_clicked(self, idx: int) -> None:
+        """User left-clicked pane ``idx``. Promote it to the selected pane.
+
+        Updates the visible selection ring and remembers the index so the
+        side panel's per-pane controls (Color by, level, etc.) target this
+        pane. The actual side-panel content swap lands in stage 6.
+        """
+        if idx == self._selected_pane:
+            # Re-selecting the same pane is a no-op (avoids toggling off
+            # during normal click-to-rotate; explicit deselect is via Esc).
+            return
+        self._selected_pane = idx
+        self._pane_container.set_selected(idx)
+
+    def _select_pane(self, idx: int | None) -> None:
+        """Programmatic selection helper (used by Escape and tab switches)."""
+        self._selected_pane = idx
+        self._pane_container.set_selected(idx)
+
     def _on_pane_layout(self, n_panes: int) -> None:
         """User picked View → Pane layout → Single / 1×2 / 2×2.
 
