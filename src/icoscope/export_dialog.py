@@ -66,6 +66,10 @@ class ExportDialog(QDialog):
         path_row.addWidget(browse)
 
         # ── output checkboxes ──
+        # png_per_pane_cb only exists in multi-pane mode; result() returns
+        # False for it in single-pane so the writer's `if png_per_pane` branch
+        # never fires on a layout that has no individual panes to write.
+        self.png_per_pane_cb: QCheckBox | None = None
         if n_panes > 1:
             self.png_composite_cb = QCheckBox("PNG composite (all panes, one image)")
             self.png_per_pane_cb = QCheckBox("PNG individual panes (one per pane)")
@@ -75,14 +79,13 @@ class ExportDialog(QDialog):
             self.svg_per_pane_cb.setChecked(defaults.svg_per_pane)
         else:
             self.png_composite_cb = QCheckBox("PNG")
-            self.png_per_pane_cb = QCheckBox()  # hidden, kept for uniform result()
             self.svg_per_pane_cb = QCheckBox("SVG")
             self.png_composite_cb.setChecked(defaults.png_composite)
             self.svg_per_pane_cb.setChecked(defaults.svg_per_pane)
-            self.png_per_pane_cb.setVisible(False)
 
         for cb in (self.png_composite_cb, self.png_per_pane_cb, self.svg_per_pane_cb):
-            cb.toggled.connect(self._refresh_counts)
+            if cb is not None:
+                cb.toggled.connect(self._refresh_counts)
 
         # Per-row tuples of (checkbox, count_label, file-list closure). Each
         # row sits in its own HBox so the count label hugs the right edge —
@@ -206,7 +209,8 @@ class ExportDialog(QDialog):
             scale=scale,
             transparent=self.transparent_cb.isChecked(),
             png_composite=self.png_composite_cb.isChecked(),
-            png_per_pane=self.png_per_pane_cb.isChecked(),
+            png_per_pane=(self.png_per_pane_cb.isChecked()
+                          if self.png_per_pane_cb is not None else False),
             svg_per_pane=self.svg_per_pane_cb.isChecked(),
         )
 

@@ -35,7 +35,9 @@ jobs:
           python -m pip install --upgrade pip
           # numpy + netCDF4 + pytest are enough for the grid + loader test suites.
           # Qt/PyVista deps are intentionally skipped — those need a display.
-          python -m pip install numpy netCDF4 pytest
+          # Pillow is used by export.py for the composite-tile helper; it's
+          # tiny and headless, fine to install in the no-Qt test job.
+          python -m pip install numpy netCDF4 pytest Pillow
           python -m pip install --no-deps -e .
 
       - name: Run tests

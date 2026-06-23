@@ -8,7 +8,7 @@ can be unit-tested without Qt or VTK.
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 
 import numpy as np
@@ -21,14 +21,19 @@ from .export_dialog import ExportDialog
 
 @dataclass
 class ExportDefaults:
-    """User choices remembered between Export… invocations."""
+    """User choices remembered between Export… invocations.
+
+    ``png_per_pane`` defaults to ``True`` so the first multi-pane export
+    opens with the "composite + individuals" bundle preselected. In
+    single-pane mode the dialog never surfaces this flag, so its value
+    is harmlessly ignored.
+    """
 
     transparent: bool = False
     scale: int = 1
     png_composite: bool = True
     png_per_pane: bool = True
     svg_per_pane: bool = False
-    flags_initialised: bool = field(default=False, repr=False)
 
 
 def _tile_panes(
@@ -169,7 +174,26 @@ def _save_pane_svg(plotter, prefix: str) -> str:
     return f"{prefix}.svg"
 
 
-def save_export(window: QMainWindow, pane_container, active_idx: int,
+def _planned_files(base: str, n_panes: int, choice) -> list[str]:
+    """Return every file path ``save_export`` would write for ``choice``.
+
+    Single source of truth shared with the overwrite-confirmation prompt,
+    so the dialog preview and the writer can never diverge.
+    """
+    out: list[str] = []
+    if choice.png_composite:
+        out.append(f"{base}.png")
+    if choice.png_per_pane and n_panes > 1:
+        out.extend(f"{base}_pane{i + 1}.png" for i in range(n_panes))
+    if choice.svg_per_pane:
+        if n_panes == 1:
+            out.append(f"{base}.svg")
+        else:
+            out.extend(f"{base}_pane{i + 1}.svg" for i in range(n_panes))
+    return out
+
+
+def save_export(window: QMainWindow, pane_container,
                 *, defaults: ExportDefaults) -> ExportDefaults:
     """Run the unified Export dialog and write whatever the user selected.
 
@@ -180,10 +204,6 @@ def save_export(window: QMainWindow, pane_container, active_idx: int,
     pane_container
         The :class:`~icoscope.panes.PaneContainer` whose visible panes are
         the export source.
-    active_idx
-        Currently-selected pane index. In single-pane mode it's the only
-        pane; in multi-pane mode the SVG export only meaningfully labels
-        per-pane files so this is mainly a hint.
     defaults
         Remembered user choices from the previous invocation. Modified-
         in-place and returned for the caller to persist.
@@ -196,12 +216,6 @@ def save_export(window: QMainWindow, pane_container, active_idx: int,
     visible = pane_container.visible_panes()
     n_panes = len(visible)
     default_base = f"icoscope_{datetime.now():%Y%m%d_%H%M%S}"
-
-    # First time we see a multi-pane layout, default the per-pane PNG box
-    # ON so the user gets the "composite + individuals" bundle by default.
-    if not defaults.flags_initialised:
-        defaults.png_per_pane = n_panes > 1
-        defaults.flags_initialised = True
 
     dlg = ExportDialog(window, default_base=default_base, n_panes=n_panes,
                        defaults=defaults)
@@ -217,6 +231,24 @@ def save_export(window: QMainWindow, pane_container, active_idx: int,
     base = choice.base_path
     if not base:
         return defaults
+
+    # Overwrite prompt — the old per-format QFileDialog warned natively on
+    # collision; the unified base-name flow doesn't, so check explicitly
+    # against every file the user is about to write.
+    planned = _planned_files(base, n_panes, choice)
+    existing = [p for p in planned if os.path.exists(p)]
+    if existing:
+        head = "\n".join(existing[:5])
+        more = f"\n… and {len(existing) - 5} more" if len(existing) > 5 else ""
+        ok = QMessageBox.question(
+            window, "Overwrite existing files?",
+            f"The following file(s) already exist:\n\n{head}{more}\n\n"
+            "Overwrite?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if ok != QMessageBox.StandardButton.Yes:
+            return defaults
 
     written: list[str] = []
     want_png = choice.png_composite or choice.png_per_pane
@@ -247,33 +279,39 @@ def save_export(window: QMainWindow, pane_container, active_idx: int,
             _save_array_png(composite, path)
             written.append(path)
 
-        if choice.png_per_pane:
-            suffix_fn = (lambda i: ".png") if n_panes == 1 \
-                else (lambda i: f"_pane{i + 1}.png")
+        if choice.png_per_pane and n_panes > 1:
             for i, img in enumerate(pane_imgs):
-                # In single-pane mode, the composite path *is* the per-pane
-                # path — skip the second write to avoid overwriting.
-                if n_panes == 1 and choice.png_composite:
-                    continue
-                path = f"{base}{suffix_fn(i)}"
+                path = f"{base}_pane{i + 1}.png"
                 _save_array_png(img, path)
                 written.append(path)
 
         if choice.svg_per_pane:
-            suffix_fn = (lambda i: "") if n_panes == 1 \
-                else (lambda i: f"_pane{i + 1}")
             for i, pane in enumerate(visible):
-                prefix = f"{base}{suffix_fn(i)}"
-                path = _save_pane_svg(pane.plotter, prefix)
-                written.append(path)
+                prefix = base if n_panes == 1 else f"{base}_pane{i + 1}"
+                try:
+                    written.append(_save_pane_svg(pane.plotter, prefix))
+                except Exception as e:
+                    # GL2PS is the usual culprit on conda VTK builds — give
+                    # the user the actionable hint they used to get from the
+                    # old save_vector path.
+                    raise RuntimeError(
+                        f"SVG export failed: {e}\n\n"
+                        "This needs a VTK build with GL2PS support."
+                    ) from e
     except Exception as e:
-        QMessageBox.critical(window, "Export failed", str(e))
+        details = str(e)
+        if written:
+            details = (f"{len(written)} file(s) were written before the failure:\n"
+                       + "\n".join(written) + f"\n\n{details}")
+        QMessageBox.critical(window, "Export failed", details)
         return defaults
 
     if written:
         if len(written) == 1:
-            msg = f"saved → {written[0]}"
+            msg = f"saved → {written[0]} ({choice.scale}× resolution)"
         else:
-            msg = f"saved {len(written)} files → {os.path.dirname(written[0]) or '.'}"
+            msg = (f"saved {len(written)} files → "
+                   f"{os.path.dirname(written[0]) or '.'} "
+                   f"({choice.scale}× resolution)")
         window.statusBar().showMessage(msg, 5000)
     return defaults

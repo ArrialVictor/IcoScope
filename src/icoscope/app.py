@@ -1671,8 +1671,7 @@ class MainWindow(QMainWindow):
 
     def _on_export(self):
         _export.save_export(
-            self, self._pane_container, self._active_pane_idx,
-            defaults=self._export_defaults,
+            self, self._pane_container, defaults=self._export_defaults,
         )
 
 
