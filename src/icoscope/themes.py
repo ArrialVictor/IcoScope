@@ -1,9 +1,9 @@
 """Visual themes — palettes for background, edges, coastlines, default colormap."""
 
 THEMES = {
-    "Dark":    dict(bg="black", edge="white",   coast="white", grat="#bbbbbb", cmap="viridis"),
-    "Light":   dict(bg="white", edge="#333333", coast="#222",  grat="#666666", cmap="viridis"),
-    "CB-safe": dict(bg="black", edge="white",   coast="white", grat="#bbbbbb", cmap="cividis"),
+    "Dark":    dict(bg="black", edge="white",   coast="white", grat="#bbbbbb", cbar="white",  cmap="viridis"),
+    "Light":  dict(bg="white", edge="#333333", coast="#222",  grat="#666666", cbar="#222",   cmap="viridis"),
+    "CB-safe": dict(bg="black", edge="white",   coast="white", grat="#bbbbbb", cbar="white",  cmap="cividis"),
 }
 
 # Perceptually-uniform / colorblind-safe colormaps only.

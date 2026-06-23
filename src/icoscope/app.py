@@ -5,7 +5,6 @@ from dataclasses import dataclass, field
 
 import numpy as np
 import pyvista as pv
-from pyvistaqt import QtInteractor
 from qtpy.QtCore import Qt, QTimer
 from qtpy.QtGui import QIcon, QKeySequence, QShortcut
 from qtpy.QtWidgets import (
@@ -27,6 +26,7 @@ from .controls import ControlPanel
 from .graticule import graticule_polydata
 from .grid import goldberg
 from .lonlat import latlon_mesh
+from .panes import PaneContainer
 from .picker import Picker
 from .playback import Playback
 from .tabs import Tab
@@ -34,21 +34,42 @@ from .themes import CMAPS, THEMES
 
 
 @dataclass
-class _TabState:
-    """Per-tab display state — colormap, overlays, widths, color overrides.
+class PaneState:
+    """Per-pane field/coloring state.
 
-    Each tab in the side panel owns one of these so switching tabs is fully
-    stateful: the user's choices on the Ico tab don't leak into the File tab
-    and vice-versa.
+    For the Ico and LonLat tabs there is always exactly one pane (the
+    synthetic mesh rendering). For the File tab there may be 1, 2, or
+    4 panes in multi-pane layouts; each pane independently picks its
+    own field (``color_by``), colormap, time/level indices, etc.
     """
 
     color_by: str = "None"
     cmap: str = "viridis"
+    center_zero: bool = False
+    colorbar_on: bool = True
+    cbar_color_override: str | None = None
+    time_index: int = 0
+    level_index: int = 0
+
+
+@dataclass
+class _TabState:
+    """Per-tab display state — overlays, widths, color overrides + per-pane list.
+
+    Each tab in the side panel owns one of these so switching tabs is fully
+    stateful: the user's choices on the Ico tab don't leak into the File tab
+    and vice-versa.
+
+    Per-pane fields (``color_by``, ``cmap``, ``time_index`` etc.) now live
+    on :class:`PaneState`; this class holds the list of panes (always
+    length 1 for Ico/LonLat; 1, 2, or 4 for File depending on the active
+    layout). The tab-shared bits (overlays, theme overrides, file metadata)
+    stay here.
+    """
+
     coastlines_on: bool = False
     graticule_on: bool = False
     edges_on: bool = True
-    colorbar_on: bool = True
-    center_zero: bool = False
     spin_on: bool = False
     edge_color_override: str | None = None
     coast_color_override: str | None = None
@@ -56,12 +77,49 @@ class _TabState:
     edge_width: float = 0.6
     coast_width: float = 1.2
     grat_width: float = 0.6
-    time_index: int = 0
-    level_index: int = 0
     # file-only fields
     file_fields: dict = field(default_factory=dict)
     # presnivs (Pa) for the loaded file, or None if no vertical dim
     file_levels: object = None
+    # Per-pane state. Default to a single pane; the File tab may grow this
+    # list to 2 or 4 entries when the user picks a multi-pane layout.
+    panes: list = field(default_factory=lambda: [PaneState()])
+
+    # ── back-compat aliases for the per-pane fields ──────────────────────
+    # Existing `state.color_by = ...` style accesses transparently read/write
+    # the first pane. The multi-pane scaffold (later in this PR series) will
+    # migrate explicit call sites to ``state.panes[i].X`` where the selected
+    # pane index matters; these aliases keep single-pane behaviour intact
+    # during the staged refactor.
+    @property
+    def color_by(self) -> str: return self.panes[0].color_by
+    @color_by.setter
+    def color_by(self, v: str) -> None: self.panes[0].color_by = v
+
+    @property
+    def cmap(self) -> str: return self.panes[0].cmap
+    @cmap.setter
+    def cmap(self, v: str) -> None: self.panes[0].cmap = v
+
+    @property
+    def center_zero(self) -> bool: return self.panes[0].center_zero
+    @center_zero.setter
+    def center_zero(self, v: bool) -> None: self.panes[0].center_zero = v
+
+    @property
+    def colorbar_on(self) -> bool: return self.panes[0].colorbar_on
+    @colorbar_on.setter
+    def colorbar_on(self, v: bool) -> None: self.panes[0].colorbar_on = v
+
+    @property
+    def time_index(self) -> int: return self.panes[0].time_index
+    @time_index.setter
+    def time_index(self, v: int) -> None: self.panes[0].time_index = v
+
+    @property
+    def level_index(self) -> int: return self.panes[0].level_index
+    @level_index.setter
+    def level_index(self, v: int) -> None: self.panes[0].level_index = v
 
 
 class MainWindow(QMainWindow):
@@ -99,7 +157,18 @@ class MainWindow(QMainWindow):
         self.verts = verts
         self.cells = cells
         self.centers = np.asarray(centers)
-        self.scalars = None           # what we actually render
+        # Per-pane scalar arrays. Index i holds the rendered field for the
+        # i-th pane (or None when that pane has no field selected). The
+        # back-compat property ``self.scalars`` (below) aliases the
+        # currently-selected pane's array — falls back to pane 0 when no
+        # selection has been made yet (single-pane behaviour).
+        self._pane_scalars: list = [None] * PaneContainer.MAX_PANES
+        self._selected_pane: int | None = None
+        # Remember the File tab's last pane layout so we can restore it when
+        # the user comes back from Ico / LonLat (we collapse to Single on
+        # leave so non-File tabs don't render their synthetic mesh into
+        # multiple panes; without this the File-tab layout would be lost).
+        self._file_layout: int = 1
         # Last successful pick: (cell_idx, lon, lat) or None. Used to refresh
         # the status-bar value display after time/level slider scrubs without
         # forcing the user to re-pick.
@@ -130,20 +199,30 @@ class MainWindow(QMainWindow):
 
         # Per-tab display state — each tab keeps its own coloring, overlays,
         # animation, and color-by selection. Switching tabs swaps which
-        # state is read by the rendering code (via ``self.state``).
-        self._ico_state = _TabState(cmap=default_cmap)
-        self._lonlat_state = _TabState(cmap=default_cmap)
-        self._file_state = _TabState(cmap=default_cmap)
+        # state is read by the rendering code (via ``self.state``). cmap
+        # is set after construction because it now lives on PaneState
+        # (via the panes[0] back-compat property).
+        self._ico_state = _TabState()
+        self._lonlat_state = _TabState()
+        self._file_state = _TabState()
+        for state in (self._ico_state, self._lonlat_state, self._file_state):
+            state.cmap = default_cmap
 
         # central layout: a horizontal splitter so the user can drag the
-        # divider between the 3-D view and the control panel. Index 0 (the
-        # plotter) carries the stretch on window resize; index 1 (the panel)
-        # has a minimum width to stay readable.
+        # divider between the 3-D view(s) and the control panel. Index 0
+        # (the PaneContainer) carries the stretch on window resize; index 1
+        # (the panel) has a minimum width to stay readable.
         self.splitter = QSplitter(Qt.Horizontal)
         self.splitter.setChildrenCollapsible(False)
         self.splitter.setHandleWidth(4)
-        self.plotter = QtInteractor(self.splitter)
-        self.splitter.addWidget(self.plotter.interactor)
+        # Multi-pane scaffold: the central viewport is now a PaneContainer
+        # that holds up to 4 panes. Stage 2 always shows exactly one pane
+        # (pane 0) so single-pane behaviour is unchanged. Stage 3 adds the
+        # View menu to switch between 1 / 1×2 / 2×2 layouts.
+        self._pane_container = PaneContainer(self.splitter)
+        self._pane_container.pane_clicked.connect(self._on_pane_clicked)
+        self.splitter.addWidget(self._pane_container)
+        self.plotter = self._pane_container.pane(0).plotter
         self.panel = ControlPanel(CMAPS)
         self.splitter.addWidget(self.panel)
         self.splitter.setStretchFactor(0, 1)
@@ -153,8 +232,11 @@ class MainWindow(QMainWindow):
         self.splitter.setSizes([1000, ControlPanel.DEFAULT_WIDTH])
         self.setCentralWidget(self.splitter)
 
-        self._theme_actions = _menubar.build_menubar(
-            self, self.theme_name, self._on_theme)
+        self._theme_actions, self._layout_actions = _menubar.build_menubar(
+            self, self.theme_name, self._on_theme,
+            on_pane_layout=self._on_pane_layout,
+            on_reset_cameras=self._on_reset_cameras,
+        )
         self._build_lonlat_widget()
         self.statusBar().showMessage("ready")
 
@@ -197,6 +279,7 @@ class MainWindow(QMainWindow):
             tab.edge_color_changed.connect(self._on_edge_color)
             tab.coast_color_changed.connect(self._on_coast_color)
             tab.grat_color_changed.connect(self._on_grat_color)
+            tab.cbar_color_changed.connect(self._on_cbar_color)
             tab.edge_width_changed.connect(self._on_edge_width)
             tab.coast_width_changed.connect(self._on_coast_width)
             tab.grat_width_changed.connect(self._on_grat_width)
@@ -251,6 +334,39 @@ class MainWindow(QMainWindow):
         return self._lonlat_state
 
     @property
+    def _active_pane_idx(self) -> int:
+        """Index of the pane the picker / single-scalar code path acts on.
+
+        For the File tab in multi-pane mode this is the user-selected pane;
+        elsewhere (or before any selection), pane 0.
+        """
+        idx = self._selected_pane
+        if idx is None:
+            return 0
+        if idx >= len(self.state.panes):
+            return 0
+        return idx
+
+    @property
+    def pane_state(self) -> PaneState:
+        """Active pane's :class:`PaneState` (selected, or pane 0 fallback)."""
+        return self.state.panes[self._active_pane_idx]
+
+    @property
+    def scalars(self):
+        """Back-compat alias for the active pane's scalar array.
+
+        Single-pane code paths (picker value display, the global ``_clim``
+        helper, etc.) read this; in multi-pane these will move to per-pane
+        helpers in stages 5–6.
+        """
+        return self._pane_scalars[self._active_pane_idx]
+
+    @scalars.setter
+    def scalars(self, value) -> None:
+        self._pane_scalars[self._active_pane_idx] = value
+
+    @property
     def active_tab(self):
         """Return the currently-active tab widget (Ico, LonLat, or File)."""
         idx = self.panel.tabs.currentIndex()
@@ -287,14 +403,23 @@ class MainWindow(QMainWindow):
         return self.state.grat_color_override or THEMES[self.theme_name].get(
             "grat", self._coast_color())
 
+    def _cbar_color(self, pane_idx: int | None = None):
+        """Per-pane colorbar text colour (override or theme default)."""
+        idx = self._active_pane_idx if pane_idx is None else pane_idx
+        pane = self.state.panes[idx]
+        return pane.cbar_color_override or THEMES[self.theme_name].get(
+            "cbar", "white")
+
     def _sync_color_buttons(self):
         hex_edge = self._color_to_hex(self._edge_color())
         hex_coast = self._color_to_hex(self._coast_color())
         hex_grat = self._color_to_hex(self._grat_color())
+        hex_cbar = self._color_to_hex(self._cbar_color())
         for tab in (self.panel.ico_tab, self.panel.lonlat_tab, self.panel.file_tab):
             tab.set_edge_color(hex_edge)
             tab.set_coast_color(hex_coast)
             tab.set_grat_color(hex_grat)
+            tab.set_cbar_color(hex_cbar)
 
     @staticmethod
     def _color_to_hex(c):
@@ -303,115 +428,179 @@ class MainWindow(QMainWindow):
         return QColor(c).name()
 
     # ── geometry ──────────────────────────────────
+    @staticmethod
+    def _pane_scalar_key(idx: int) -> str:
+        """Name of the per-pane scalar array stored on the shared mesh."""
+        return f"pane{idx}_scalars"
+
     def _to_polydata(self):
-        """Build a fresh PolyData from ``self.verts/cells/scalars``.
+        """Build a fresh PolyData from ``self.verts/cells`` + per-pane scalars.
 
         Expensive on a 64 k-cell mesh because of the Python loop assembling
         the ``faces_flat`` array. Only call when geometry actually changed
         (verts or cells differ); for scalar-only swaps (slider scrubs) use
         :meth:`_update_scalars_only`, which mutates the existing PolyData
         in place and avoids the loop.
+
+        Each pane's scalar array is bound to its own named key on the
+        polydata so panes can independently colour the shared geometry.
+        Stale arrays whose length doesn't match the new cell count are
+        skipped (and the slot cleared) — happens on tab switch when the
+        previous tab's pane scalars carry the wrong shape.
         """
         faces_flat = []
         for c in self.cells:
             faces_flat.append(len(c))
             faces_flat.extend(c)
         mesh = pv.PolyData(self.verts, faces=np.array(faces_flat, dtype=np.int64))
-        if self.scalars is not None:
-            mesh.cell_data["scalars"] = np.asarray(self.scalars)
+        n_cells = len(self.cells)
+        for i, arr in enumerate(self._pane_scalars):
+            if arr is None:
+                continue
+            if len(arr) != n_cells:
+                # Stale entry from a previous mesh — drop it instead of
+                # crashing in vtk's array-length check.
+                self._pane_scalars[i] = None
+                continue
+            mesh.cell_data[self._pane_scalar_key(i)] = np.asarray(arr)
         return mesh
 
-    def _update_scalars_only(self) -> None:
-        """Swap the active scalars on the cached PolyData in place.
+    def _update_scalars_only(self, pane_idx: int | None = None) -> None:
+        """Swap one pane's scalars on the cached PolyData in place.
 
         Used in the slider-scrub hot path where geometry hasn't changed
-        between frames. Roughly an order of magnitude faster than
-        rebuilding the PolyData since it skips the ``faces_flat`` loop and
-        the VTK PolyData construction.
+        between frames. ``pane_idx=None`` updates the active pane only;
+        pass an explicit index to update a different pane (used during
+        layout-change re-renders).
         """
         if self._mesh is None:
-            # First-time safety net; nothing cached to mutate.
             self._mesh = self._to_polydata()
             return
-        if self.scalars is None:
-            if "scalars" in self._mesh.cell_data:
-                del self._mesh.cell_data["scalars"]
+        idx = self._active_pane_idx if pane_idx is None else pane_idx
+        key = self._pane_scalar_key(idx)
+        arr = self._pane_scalars[idx]
+        if arr is None:
+            if key in self._mesh.cell_data:
+                del self._mesh.cell_data[key]
         else:
-            self._mesh.cell_data["scalars"] = np.asarray(self.scalars)
+            self._mesh.cell_data[key] = np.asarray(arr)
 
-    def _clim(self):
-        if self.scalars is None or not self.state.center_zero:
+    def _clim(self, pane_idx: int | None = None):
+        """Colour-limit range for a pane's scalar array (or None for auto)."""
+        idx = self._active_pane_idx if pane_idx is None else pane_idx
+        arr = self._pane_scalars[idx]
+        pane = self.state.panes[idx]
+        if arr is None or not pane.center_zero:
             return None
-        s = np.asarray(self.scalars)
+        s = np.asarray(arr)
         a = float(np.nanmax(np.abs(s)))
         return [-a, a] if a > 0 else None
 
     # ── rendering ─────────────────────────────────
     def _build_scene(self):
-        # Defer to the empty-sphere path when there's no mesh to render
-        # (File tab pre-load, LonLat placeholder). This makes overlay
-        # toggles a no-op in that state instead of crashing.
+        """Render the current scene on every visible pane.
+
+        Each pane gets its own actor stack on its own ``QtInteractor``
+        (the shared mesh is rendered N times with N different scalar
+        bindings, plus a copy of the overlay actors per pane). Defers to
+        the empty-sphere fallback when there's no mesh yet.
+        """
         if self._mesh is None:
             self._render_empty_sphere()
             return
-        # Coming back from the empty-sphere state, the "empty" actor stays
-        # in the plotter unless we explicitly drop it — it would render
-        # underneath the real mesh.
-        self.plotter.remove_actor("empty", reset_camera=False, render=False)
-        theme = THEMES[self.theme_name]
-        self.plotter.set_background(theme["bg"])
-        st = self.state
+        for idx in range(self._pane_container.n_visible):
+            self._build_pane_scene(idx)
 
-        self.plotter.add_mesh(
+    def _build_pane_scene(self, pane_idx: int) -> None:
+        """Render the scene on pane ``pane_idx``'s plotter.
+
+        Each pane reads its own :class:`PaneState` (``cmap``, ``center_zero``,
+        ``colorbar_on``) and binds to its own per-pane scalar key on the
+        shared mesh. Overlays (coastlines, graticule, edges, theme) are
+        tab-shared so every visible pane gets the same overlay actors.
+        """
+        plotter = self._pane_container.pane(pane_idx).plotter
+        plotter.remove_actor("empty", reset_camera=False, render=False)
+        # PyVista keeps the existing scalar-bar actor across add_mesh calls
+        # and only honours scalar_bar_args on first creation. Drop it so
+        # the new title / label / colour / format actually takes effect.
+        # Suppress everything: PyVista's remove_scalar_bar raises various
+        # exceptions when there's no bar (KeyError, IndexError, or
+        # StopIteration depending on version) and the "nothing to remove"
+        # case is benign — first call on a fresh plotter, mostly.
+        import contextlib
+        with contextlib.suppress(KeyError, IndexError, StopIteration):
+            plotter.remove_scalar_bar()
+        theme = THEMES[self.theme_name]
+        plotter.set_background(theme["bg"])
+        st = self.state                          # tab-shared (overlays, theme)
+        pane = self.state.panes[pane_idx]        # per-pane (cmap, etc.)
+        has_scalars = self._pane_scalars[pane_idx] is not None
+        scalar_key = self._pane_scalar_key(pane_idx) if has_scalars else None
+
+        plotter.add_mesh(
             self._mesh, name="grid",
-            scalars="scalars" if self.scalars is not None else None,
-            cmap=st.cmap,
-            clim=self._clim(),
+            scalars=scalar_key,
+            cmap=pane.cmap,
+            clim=self._clim(pane_idx),
             show_edges=st.edges_on,
             edge_color=self._edge_color(),
             line_width=st.edge_width,
             smooth_shading=False,
-            show_scalar_bar=st.colorbar_on and self.scalars is not None,
+            show_scalar_bar=pane.colorbar_on and has_scalars,
+            scalar_bar_args=({"color": self._cbar_color(pane_idx),
+                              "title_font_size": 12,
+                              "label_font_size": 10,
+                              "fmt": "%.3g"}
+                             if pane.colorbar_on and has_scalars else None),
             reset_camera=False,
         )
 
         if st.coastlines_on:
             try:
                 cl = coastline_polydata(radius=1.001)
-                self.plotter.add_mesh(cl, name="coast",
-                                      color=self._coast_color(),
-                                      line_width=st.coast_width,
-                                      pickable=False, reset_camera=False)
+                plotter.add_mesh(cl, name="coast",
+                                 color=self._coast_color(),
+                                 line_width=st.coast_width,
+                                 pickable=False, reset_camera=False)
             except Exception as e:
                 self.statusBar().showMessage(f"coastlines failed: {e}")
         else:
-            self.plotter.remove_actor("coast", reset_camera=False, render=False)
+            plotter.remove_actor("coast", reset_camera=False, render=False)
 
         if st.graticule_on:
             try:
                 g = graticule_polydata(radius=1.002, spacing=30)
-                self.plotter.add_mesh(g, name="grat",
-                                      color=self._grat_color(),
-                                      line_width=st.grat_width,
-                                      opacity=0.6, pickable=False, reset_camera=False)
+                plotter.add_mesh(g, name="grat",
+                                 color=self._grat_color(),
+                                 line_width=st.grat_width,
+                                 opacity=0.6, pickable=False, reset_camera=False)
             except Exception as e:
                 self.statusBar().showMessage(f"graticule failed: {e}")
         else:
-            self.plotter.remove_actor("grat", reset_camera=False, render=False)
+            plotter.remove_actor("grat", reset_camera=False, render=False)
 
-        self.plotter.render()
+        plotter.render()
 
     # ── ESC: clear current selection + stop spin ──
     def _on_escape(self):
         self.picker.clear_highlight()
         self._clear_lonlat()
+        # Deselect any active multi-pane selection so the side panel can
+        # swap back to Global mode (stage 6 wires that up).
+        self._select_pane(None)
         if self.state.spin_on:
             self.state.spin_on = False
             self.playback.stop_spin()
             # Uncheck on whichever tab's spin checkbox is currently checked.
+            # The File tab's spin_cb lives on display_global (Auto-rotate is a
+            # tab-shared setting and only the global block in mode='pane' or
+            # 'global' has the checkbox); Ico / LonLat use the combined block
+            # where the checkbox is on `display`.
             for tab in (self.panel.ico_tab, self.panel.lonlat_tab, self.panel.file_tab):
-                cb = tab.display.spin_cb
-                if cb.isChecked():
+                source = getattr(tab, "display_global", None) or tab.display
+                cb = getattr(source, "spin_cb", None)
+                if cb is not None and cb.isChecked():
                     cb.blockSignals(True)
                     cb.setChecked(False)
                     cb.blockSignals(False)
@@ -603,6 +792,139 @@ class MainWindow(QMainWindow):
         self.plotter.render()
 
     # ── slots ─────────────────────────────────────
+    def _on_reset_cameras(self) -> None:
+        """Reset every visible pane's camera to the default isometric view.
+
+        Useful after zooming / panning in multiple panes — quick "back to
+        a clean view" without having to know VTK's built-in 'r'
+        shortcut. ``reset_camera()`` alone leaves the camera's pan offset
+        in place; ``view_isometric()`` aggressively repoints the focal
+        point at the origin, which is what users actually want here. Then
+        ``reset_camera()`` fits the sphere to the viewport.
+        """
+        for i in range(self._pane_container.n_visible):
+            plotter = self._pane_container.pane(i).plotter
+            plotter.view_isometric()
+            plotter.reset_camera()
+            plotter.render()
+
+    def _on_pane_clicked(self, idx: int) -> None:
+        """User left-clicked pane ``idx``. Promote it to the selected pane.
+
+        Updates the visible selection ring, swaps the File-tab side panel
+        to per-pane mode for that pane, and triggers a refresh so the
+        per-pane widgets reflect the new pane's :class:`PaneState`.
+        """
+        if idx == self._selected_pane:
+            # Re-selecting the same pane is a no-op (avoids toggling off
+            # during normal click-to-rotate; explicit deselect is via Esc).
+            return
+        self._select_pane(idx)
+
+    def _select_pane(self, idx: int | None) -> None:
+        """Programmatic selection helper (used by clicks, Escape, tab switches).
+
+        Updates the selection ring, syncs the File-tab side panel between
+        Global / per-pane mode, and pushes the new pane's state into the
+        relevant widgets when entering pane mode.
+        """
+        self._selected_pane = idx
+        self._pane_container.set_selected(idx)
+        # Side-panel mode swap (File tab only — Ico/LonLat are always
+        # single-pane and don't have the mode header).
+        if idx is None:
+            self.panel.file_tab.set_mode("global")
+        else:
+            self.panel.file_tab.set_mode("pane", pane_idx=idx)
+            self._sync_pane_widgets(idx)
+
+    def _sync_pane_widgets(self, pane_idx: int) -> None:
+        """Push pane[idx]'s state into the File-tab per-pane widgets.
+
+        Called on selection change so the user sees the right colormap,
+        Color-by choice, slider positions, etc. — without the widgets
+        firing their `*_changed` signals back at us (each is blocked).
+        """
+        if not self._file_cache:
+            # No file loaded — nothing meaningful to sync onto the per-pane
+            # widgets. set_mode() has already updated the header.
+            return
+        pane = self.state.panes[pane_idx]
+        ft = self.panel.file_tab
+        ft.set_color_by(pane.color_by)
+        ft.set_cmap(pane.cmap)
+        block = ft.display_pane
+        block.center_cb.blockSignals(True)
+        block.center_cb.setChecked(pane.center_zero)
+        block.center_cb.blockSignals(False)
+        block.bar_cb.blockSignals(True)
+        block.bar_cb.setChecked(pane.colorbar_on)
+        block.bar_cb.blockSignals(False)
+        # Sync the per-pane colorbar text colour swatch too (override or
+        # current theme default).
+        ft.set_cbar_color(self._color_to_hex(self._cbar_color(pane_idx)))
+        # Re-sync the enable state so a colour-by pane that's switched in
+        # gets its swatch + cmap / checkboxes interactive immediately.
+        enable = pane.color_by != "None"
+        block.center_cb.setEnabled(enable)
+        block.bar_cb.setEnabled(enable)
+        block.cbar_btn.setEnabled(enable)
+        block.cmap_box.setEnabled(enable)
+        meta = self._file_state.file_fields.get(pane.color_by)
+        if meta and meta.get("time_varying"):
+            n_t = meta["shape"][0]
+            ft.set_time_axis(n_t, times=self._times_for(meta))
+            slider = block.time_slider
+            slider.blockSignals(True)
+            slider.setValue(min(max(pane.time_index, 0), n_t - 1))
+            slider.blockSignals(False)
+            ft.set_time_label(slider.value())
+        if meta and meta.get("n_levels", 0) > 1 and self._file_state.file_levels is not None:
+            n_l = meta["n_levels"]
+            ft.set_levels(self._file_state.file_levels)
+            slider = block.level_slider
+            slider.blockSignals(True)
+            slider.setValue(min(max(pane.level_index, 0), n_l - 1))
+            slider.blockSignals(False)
+            ft.set_level_label(slider.value())
+
+    def _on_pane_layout(self, n_panes: int) -> None:
+        """User picked View → Pane layout → Single / 1×2 / 2×2.
+
+        Reshuffles the :class:`PaneContainer`, grows :attr:`state.panes`
+        to match (newly-visible panes inherit pane 0's settings as
+        defaults), computes the new panes' scalar arrays, renders, and
+        resets the camera on freshly-revealed panes so the sphere fits
+        their viewport instead of starting at PyVista's default tight
+        zoom.
+        """
+        prev_n = self._pane_container.n_visible
+        self._pane_container.set_layout(n_panes)
+        _menubar.sync_layout_checkmarks(
+            getattr(self, "_layout_actions", {}), n_panes)
+        # Remember the user's File-tab layout so it survives tab switches
+        # (we collapse to Single when leaving File so the synthetic Ico /
+        # LonLat meshes don't render into all 4 viewports).
+        if self.panel.tabs.currentIndex() == Tab.FILE:
+            self._file_layout = n_panes
+        panes = self.state.panes
+        # Newly-visible panes inherit pane 0's settings so the user has
+        # a coherent starting point (see _design/multi-pane-comparison.md
+        # "Default on file open"). Use dataclasses.replace so each new
+        # pane is an independent copy.
+        from dataclasses import replace
+        while len(panes) < n_panes:
+            panes.append(replace(panes[0]))
+        for idx in range(n_panes):
+            self._refresh_scalars(idx)
+            self._update_scalars_only(idx)
+        self._build_scene()
+        # Reset the camera on panes that just became visible — without
+        # this they use PyVista's pre-add-mesh default which can leave
+        # the sphere clipped or off-centre.
+        for idx in range(prev_n, n_panes):
+            self._pane_container.pane(idx).plotter.reset_camera()
+
     def _on_theme(self, name):
         self.theme_name = name
         # Keep the menu's checkmark in sync (mutually-exclusive).
@@ -624,7 +946,7 @@ class MainWindow(QMainWindow):
         self._update_status()
 
     def _on_cmap(self, name):
-        self.state.cmap = name
+        self.pane_state.cmap = name
         self._build_scene()
 
     def _on_coast(self, on):
@@ -639,22 +961,29 @@ class MainWindow(QMainWindow):
         self.state.edges_on = on
         self._build_scene()
 
-    def _refresh_scalars(self):
-        """Compute self.scalars from the current `color_by` choice."""
-        color_by = self.state.color_by
+    def _refresh_scalars(self, pane_idx: int | None = None) -> None:
+        """Compute a pane's scalar array from its :class:`PaneState`.
+
+        Defaults to the active pane (single-pane code paths); pass an
+        explicit ``pane_idx`` to recompute a different pane (used when
+        a layout change makes a previously-hidden pane visible).
+        """
+        idx = self._active_pane_idx if pane_idx is None else pane_idx
+        pane = self.state.panes[idx]
+        color_by = pane.color_by
         file_fields = self._file_state.file_fields
         if color_by == "Latitude":
-            self.scalars = np.degrees(np.arcsin(self.centers[:, 2]))
+            arr = np.degrees(np.arcsin(self.centers[:, 2]))
         elif color_by == "Cell kind":
-            self.scalars = np.array([0 if len(c) == 5 else 1 for c in self.cells],
-                                    dtype=float)
+            arr = np.array([0 if len(c) == 5 else 1 for c in self.cells],
+                           dtype=float)
         elif color_by == "Mock temperature":
             # Clean synthetic field: latitude gradient + a faint zonal wave.
             # Same formula as the `tas` field in tools/make_test_nc.py.
             c = self.centers / np.linalg.norm(self.centers, axis=1, keepdims=True)
             lat = np.arcsin(np.clip(c[:, 2], -1, 1))
             lon = np.arctan2(c[:, 1], c[:, 0])
-            self.scalars = 250.0 + 50.0 * np.cos(lat) + 5.0 * np.cos(2 * lon)
+            arr = 250.0 + 50.0 * np.cos(lat) + 5.0 * np.cos(2 * lon)
         elif color_by == "Realistic temperature":
             # Earth-like surface-temperature mock: base latitudinal gradient,
             # plus broad Gaussian "hot spots" over major land masses (Sahara,
@@ -688,27 +1017,32 @@ class MainWindow(QMainWindow):
             T += gauss(-82,   0, -32, 22)   # Antarctic interior
             T += gauss( 65,  100, -8, 18)   # Siberian winter (mild proxy)
 
-            self.scalars = T
+            arr = T
         elif color_by in file_fields and self.file_path:
             from .loader import read_field
             ctx = self._file_cache.get("context") if self._file_cache else None
-            self.scalars = read_field(
+            arr = read_field(
                 self.file_path, color_by,
-                time_index=self._file_state.time_index,
-                level_index=self._file_state.level_index,
+                time_index=pane.time_index,
+                level_index=pane.level_index,
                 context=ctx,
             )
         else:
-            self.scalars = None
+            arr = None
+        self._pane_scalars[idx] = arr
 
     def _on_color_by(self, name):
-        st = self.state
-        st.color_by = name
+        # The change targets the selected pane (or pane 0 on Ico/LonLat
+        # where there's only ever one). Writing to self.pane_state (not
+        # self.state) routes through the active pane — without this, multi-
+        # pane changes would silently update pane 0 regardless of selection.
+        self.pane_state.color_by = name
         # Enable/disable cmap-related widgets on the tab that emitted the change.
         tab = self.active_tab
         if hasattr(tab, "display"):
             tab.display.center_cb.setEnabled(name != "None")
             tab.display.bar_cb.setEnabled(name != "None")
+            tab.display.cbar_btn.setEnabled(name != "None")
             tab.display.cmap_box.setEnabled(name != "None")
         # configure the time + level sliders for the active field (File tab only).
         meta = self._file_state.file_fields.get(name) if tab is self.panel.file_tab else None
@@ -720,13 +1054,13 @@ class MainWindow(QMainWindow):
                 )
             else:
                 self.panel.file_tab.set_time_axis(0)
-            self._file_state.time_index = 0
+            self.pane_state.time_index = 0
             n_levels = meta.get("n_levels", 0) if meta else 0
             if n_levels > 1 and self._file_state.file_levels is not None:
                 self.panel.file_tab.set_levels(self._file_state.file_levels)
             else:
                 self.panel.file_tab.set_levels(None)
-            self._file_state.level_index = 0
+            self.pane_state.level_index = 0
         self._refresh_scalars()
         # Color-by changes only the scalar field — geometry (and the picker
         # locator built from it) stay valid, so just swap scalars in place.
@@ -739,11 +1073,11 @@ class MainWindow(QMainWindow):
         self._build_scene()
 
     def _on_colorbar(self, on):
-        self.state.colorbar_on = on
+        self.pane_state.colorbar_on = on
         self._build_scene()
 
     def _on_center_zero(self, on):
-        self.state.center_zero = on
+        self.pane_state.center_zero = on
         self._build_scene()
 
     def _on_edge_color(self, hex_str):
@@ -756,6 +1090,10 @@ class MainWindow(QMainWindow):
 
     def _on_grat_color(self, hex_str):
         self.state.grat_color_override = hex_str
+        self._build_scene()
+
+    def _on_cbar_color(self, hex_str):
+        self.pane_state.cbar_color_override = hex_str
         self._build_scene()
 
     def _on_edge_width(self, w):
@@ -1043,6 +1381,7 @@ class MainWindow(QMainWindow):
         # wouldn't fire otherwise.
         self.panel.file_tab.display.center_cb.setEnabled(False)
         self.panel.file_tab.display.bar_cb.setEnabled(False)
+        self.panel.file_tab.display.cbar_btn.setEnabled(False)
         self.panel.file_tab.display.cmap_box.setEnabled(False)
         self.panel.file_tab.set_time_steps(0)
         self.panel.file_tab.set_levels(None)
@@ -1118,24 +1457,49 @@ class MainWindow(QMainWindow):
         enable = self._file_state.color_by != "None"
         self.panel.file_tab.display.center_cb.setEnabled(enable)
         self.panel.file_tab.display.bar_cb.setEnabled(enable)
+        self.panel.file_tab.display.cbar_btn.setEnabled(enable)
         self.panel.file_tab.display.cmap_box.setEnabled(enable)
         self._apply_mesh_change()
 
     def _on_tab_changed(self, idx: int):
         """Tab is the active mesh source — swap the rendered scene accordingly."""
-        if idx == Tab.ICO:
-            self._regen_synthetic()
-        elif idx == Tab.LONLAT:
-            self._regen_lonlat()
-        elif idx == Tab.FILE:
+        # Tab switching has two ordering constraints that conflict:
+        # (a) leaving a multi-pane File layout for Ico/LonLat: collapse to
+        #     Single BEFORE the regen, otherwise _build_scene iterates over
+        #     panes that don't exist in the new tab's state.panes.
+        # (b) entering File from a single-pane Ico/LonLat: activate the
+        #     File mesh BEFORE restoring the multi-pane layout, otherwise
+        #     _on_pane_layout's _update_scalars_only writes File-sized
+        #     scalars against the previous tab's smaller mesh and crashes.
+        # Handle them as two separate branches.
+        is_file_tab = idx == Tab.FILE
+        for action in getattr(self, "_layout_actions", {}).values():
+            action.setEnabled(is_file_tab)
+
+        if not is_file_tab:
+            # Leaving File: collapse layout + clear selection BEFORE regen.
+            if self._pane_container.n_visible != 1:
+                self._pane_container.set_layout(1)
+                _menubar.sync_layout_checkmarks(
+                    getattr(self, "_layout_actions", {}), 1)
+            self._select_pane(None)
+            if idx == Tab.ICO:
+                self._regen_synthetic()
+            elif idx == Tab.LONLAT:
+                self._regen_lonlat()
+        else:
+            # Entering File: activate the mesh FIRST so subsequent layout
+            # restore writes scalars against the correct geometry.
             if self._file_cache is not None:
                 self._activate_file_view()
             else:
                 # No file loaded — show a plain empty sphere instead of
-                # whatever was last rendered. The File tab's overlay
-                # settings are ignored in this state since there's no
-                # geographic data to overlay onto.
+                # whatever was last rendered.
                 self._render_empty_sphere()
+            if self._pane_container.n_visible != self._file_layout:
+                self._on_pane_layout(self._file_layout)
+            if self._selected_pane is None:
+                self._select_pane(0)
         # Per-tab colour overrides may differ → refresh swatches.
         self._sync_color_buttons()
         # Auto-rotate is per-tab state but the timer is window-level — sync
@@ -1147,34 +1511,42 @@ class MainWindow(QMainWindow):
         self._update_status()
 
     def _render_empty_sphere(self):
-        """Render a plain blank sphere (no cells, no overlays).
+        """Render a plain blank sphere on every visible pane.
 
         Used when a tab is active but has no mesh to show yet — the
         File tab before any NetCDF is loaded, and the LonLat placeholder
         tab. Conveys "this is the canvas, populate it" without leaking
         stale geometry from another tab into the view.
         """
-        self.plotter.clear()
-        self.plotter.set_background(THEMES[self.theme_name]["bg"])
+        bg = THEMES[self.theme_name]["bg"]
         # pv.Sphere uses theta/phi tessellation, which leaves visible latitude
         # rings even with smooth_shading on. Icosphere has no pole singularity
         # and no axis-aligned strips, so the surface reads as a clean sphere.
         sphere = pv.Icosphere(radius=1.0, nsub=5)
-        self.plotter.add_mesh(sphere, name="empty",
-                              color="#777777", show_edges=False,
-                              smooth_shading=True, reset_camera=False)
+        for idx in range(self._pane_container.n_visible):
+            plotter = self._pane_container.pane(idx).plotter
+            plotter.clear()
+            plotter.set_background(bg)
+            plotter.add_mesh(sphere, name="empty",
+                             color="#777777", show_edges=False,
+                             smooth_shading=True, reset_camera=False)
+            plotter.render()
         self._mesh = None
-        self.scalars = None
+        # Clear every pane's scalar array so a subsequent re-render isn't
+        # confused by stale data left over from a prior file.
+        self._pane_scalars = [None] * PaneContainer.MAX_PANES
         self.picker.invalidate_locator()
         self.picker.clear_highlight()
-        self.plotter.render()
         self._update_status()
 
     def _on_time_changed(self, idx):
-        if idx == self._file_state.time_index:
+        # Targets the selected pane (or pane 0 when no selection). Going
+        # through self.pane_state ensures multi-pane scrubs only affect
+        # the user's selected viewport.
+        if idx == self.pane_state.time_index:
             return
-        self._file_state.time_index = idx
-        meta = self._file_state.file_fields.get(self._file_state.color_by)
+        self.pane_state.time_index = idx
+        meta = self._file_state.file_fields.get(self.pane_state.color_by)
         if meta:
             self.panel.file_tab.set_time_label(idx)
         self._refresh_scalars()
@@ -1185,9 +1557,9 @@ class MainWindow(QMainWindow):
         self._build_scene()
 
     def _on_level_changed(self, idx):
-        if idx == self._file_state.level_index:
+        if idx == self.pane_state.level_index:
             return
-        self._file_state.level_index = idx
+        self.pane_state.level_index = idx
         self._refresh_scalars()
         self._refresh_picked_value()
         self._update_scalars_only()

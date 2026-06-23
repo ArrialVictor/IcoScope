@@ -77,6 +77,7 @@ class _DisplayBlock(QWidget):
     edge_color_changed  = Signal(str)
     coast_color_changed = Signal(str)
     grat_color_changed  = Signal(str)
+    cbar_color_changed  = Signal(str)
 
     # Overlays
     coastlines_toggled  = Signal(bool)
@@ -153,14 +154,27 @@ class _DisplayBlock(QWidget):
         self.center_cb.toggled.connect(self.center_zero_toggled)
         cf.addRow(self.center_cb)
 
+        # Colorbar toggle + text-colour picker share one row so the colour
+        # control sits visually next to what it affects (per-pane).
+        bar_row = QHBoxLayout()
+        bar_row.setContentsMargins(0, 0, 0, 0)
+        bar_row.setSpacing(6)
         self.bar_cb = QCheckBox("Colorbar")
         self.bar_cb.setChecked(True)
         self.bar_cb.toggled.connect(self.colorbar_toggled)
-        cf.addRow(self.bar_cb)
+        bar_row.addWidget(self.bar_cb, stretch=1)
+        self.cbar_btn = ColorButton("#ffffff")
+        self.cbar_btn.setToolTip("Colorbar text colour")
+        self.cbar_btn.color_changed.connect(self.cbar_color_changed)
+        bar_row.addWidget(self.cbar_btn)
+        bar_wrap = QWidget()
+        bar_wrap.setLayout(bar_row)
+        cf.addRow(bar_wrap)
 
         # color-by defaults to "None" → cmap-related widgets start disabled
         self.center_cb.setEnabled(False)
         self.bar_cb.setEnabled(False)
+        self.cbar_btn.setEnabled(False)
         self.cmap_box.setEnabled(False)
 
         return col
@@ -359,6 +373,10 @@ class _DisplayBlock(QWidget):
     def set_grat_color(self, hex_str: str) -> None:
         """Set the graticule-color swatch."""
         self.grat_btn.set_color(hex_str)
+
+    def set_cbar_color(self, hex_str: str) -> None:
+        """Set the colorbar-text-color swatch."""
+        self.cbar_btn.set_color(hex_str)
 
     def set_time_axis(self, n_steps: int, times=None) -> None:
         """Configure the time slider for a time-varying field, or hide it.
