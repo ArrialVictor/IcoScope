@@ -10,13 +10,16 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 import numpy as np
 from PIL import Image
-from qtpy.QtCore import QPoint
-from qtpy.QtWidgets import QMainWindow, QMessageBox
 
-from .export_dialog import ExportDialog
+# Qt + the dialog module are only needed inside save_export. Keeping them out
+# of the module-top imports lets the pure-numpy helpers (_tile_panes, etc.)
+# stay importable in headless / CI environments without Qt installed.
+if TYPE_CHECKING:
+    from qtpy.QtWidgets import QMainWindow
 
 
 @dataclass
@@ -193,7 +196,7 @@ def _planned_files(base: str, n_panes: int, choice) -> list[str]:
     return out
 
 
-def save_export(window: QMainWindow, pane_container,
+def save_export(window: "QMainWindow", pane_container,
                 *, defaults: ExportDefaults) -> ExportDefaults:
     """Run the unified Export dialog and write whatever the user selected.
 
@@ -213,6 +216,12 @@ def save_export(window: QMainWindow, pane_container,
     ExportDefaults
         Updated defaults reflecting this session's choices.
     """
+    # Lazy imports — see module-top comment.
+    from qtpy.QtCore import QPoint
+    from qtpy.QtWidgets import QMessageBox
+
+    from .export_dialog import ExportDialog
+
     visible = pane_container.visible_panes()
     n_panes = len(visible)
     default_base = f"icoscope_{datetime.now():%Y%m%d_%H%M%S}"
