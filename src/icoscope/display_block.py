@@ -48,10 +48,26 @@ SYNTHETIC_UNITS = {
 class _DisplayBlock(QWidget):
     """Standard display controls: Coloring + Overlays + Animation + Export.
 
-    The ``with_time`` flag controls whether the Animation group includes the
-    time slider, play button, and speed spinbox (only meaningful for the
-    File tab where a time-varying field can be active).
+    Three modes select which subset of groups is built:
+
+    - ``combined`` (default; Ico / LonLat tabs): every group — Coloring,
+      Overlays, Animation, Export. ``with_time=True`` additionally shows
+      the time / speed / level rows inside Animation.
+    - ``global`` (multi-pane File tab, Global side panel): only the
+      *globally-shared* groups — Overlays, Animation (autorotate +
+      playback speed only), Export.
+    - ``pane`` (multi-pane File tab, per-pane side panel): only the
+      *per-pane* groups — Coloring, plus the time / play / level rows
+      that the selected pane carries.
+
+    The split mirrors how multi-pane mode divides the side panel: global
+    settings (theme, overlays, autorotate, layout selector) live in one
+    block; per-pane settings (Color by, vertical level, etc.) live in
+    another. Stage 1 of the multi-pane scaffold (this refactor) leaves
+    every existing caller on ``combined`` so behaviour is unchanged.
     """
+
+    _VALID_MODES = ("combined", "global", "pane")
 
     # Coloring
     cmap_changed        = Signal(str)
@@ -86,17 +102,32 @@ class _DisplayBlock(QWidget):
     vector_export_clicked  = Signal()
 
     def __init__(self, cmaps: list[str], with_time: bool,
-                 parent: QWidget | None = None):
+                 parent: QWidget | None = None,
+                 mode: str = "combined"):
         super().__init__(parent)
-        self.with_time = with_time
+        if mode not in self._VALID_MODES:
+            raise ValueError(
+                f"mode must be one of {self._VALID_MODES}; got {mode!r}"
+            )
+        self.mode = mode
+        # `with_time` only meaningfully applies in "combined" and "pane"
+        # modes; "global" ignores it because the global side panel never
+        # shows time / level rows.
+        self.with_time = with_time and mode in ("combined", "pane")
         self._levels_pa = None  # populated by set_levels for file fields
         self._levels_are_indices = False
         v = QVBoxLayout(self)
         v.setContentsMargins(0, 0, 0, 0)
-        v.addWidget(self._build_coloring_group(cmaps))
-        v.addWidget(self._build_overlays_group())
+        # Group selection per mode. The animation group is split — global
+        # gets autorotate + playback speed, pane gets the time / level
+        # rows, combined gets everything.
+        if mode in ("combined", "pane"):
+            v.addWidget(self._build_coloring_group(cmaps))
+        if mode in ("combined", "global"):
+            v.addWidget(self._build_overlays_group())
         v.addWidget(self._build_animation_group())
-        v.addWidget(self._build_export_group())
+        if mode in ("combined", "global"):
+            v.addWidget(self._build_export_group())
 
     # ── group builders ────────────────────────────────────────────────────
 
@@ -180,9 +211,13 @@ class _DisplayBlock(QWidget):
     def _build_animation_group(self) -> QGroupBox:
         anim = QGroupBox("Animation")
         al = QVBoxLayout(anim)
-        self.spin_cb = QCheckBox("Auto-rotate")
-        self.spin_cb.toggled.connect(self.autorotate_toggled)
-        al.addWidget(self.spin_cb)
+        # Auto-rotate lives in global / combined. Pane-mode side panels don't
+        # show it because the camera-sync toggle (later PR) decides how
+        # rotation propagates across panes.
+        if self.mode in ("combined", "global"):
+            self.spin_cb = QCheckBox("Auto-rotate")
+            self.spin_cb.toggled.connect(self.autorotate_toggled)
+            al.addWidget(self.spin_cb)
 
         if not self.with_time:
             return anim
