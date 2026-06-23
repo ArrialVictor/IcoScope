@@ -867,28 +867,27 @@ class MainWindow(QMainWindow):
             self._on_camera_modified(anchor)
 
     def _on_reset_cameras(self) -> None:
-        """Reset every visible pane's camera to the default isometric view.
+        """Reset the active pane's camera to the default isometric view.
 
-        Useful after zooming / panning in multiple panes — quick "back to
-        a clean view" without having to know VTK's built-in 'r'
-        shortcut. ``reset_camera()`` alone leaves the camera's pan offset
-        in place; ``view_isometric()`` aggressively repoints the focal
-        point at the origin, which is what users actually want here. Then
-        ``reset_camera()`` fits the sphere to the viewport.
+        Behaviour depends on the camera-sync mode:
+        - **Sync ON**: resets the active pane, then the observer chain
+          mirrors the reset onto every other visible pane (so visually
+          "all reset", but driven from one source — matches what the
+          rest of the sync code does).
+        - **Sync OFF**: resets only the active pane. Other panes keep
+          whatever vantage the user carefully positioned them at —
+          desync mode exists exactly so different panes can show the
+          same data from different angles, and Cmd+R wiping that would
+          defeat the point.
+
+        ``reset_camera()`` alone leaves the camera's pan offset in place;
+        ``view_isometric()`` aggressively repoints the focal point at the
+        origin, then ``reset_camera()`` fits the sphere to the viewport.
         """
-        # Suppress observer-driven mirroring during the per-pane reset.
-        # Otherwise the first pane's reset propagates to the others, then
-        # their reset propagates back, etc. — wasteful and produces flicker
-        # before all panes converge to the same isometric view anyway.
-        self._syncing_cameras = True
-        try:
-            for i in range(self._pane_container.n_visible):
-                plotter = self._pane_container.pane(i).plotter
-                plotter.view_isometric()
-                plotter.reset_camera()
-                plotter.render()
-        finally:
-            self._syncing_cameras = False
+        plotter = self._pane_container.pane(self._active_pane_idx).plotter
+        plotter.view_isometric()
+        plotter.reset_camera()
+        plotter.render()
 
     def _on_pane_clicked(self, idx: int) -> None:
         """User left-clicked pane ``idx``. Promote it to the selected pane.
