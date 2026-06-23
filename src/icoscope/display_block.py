@@ -117,9 +117,7 @@ class _DisplayBlock(QWidget):
 
         self.center_cb = QCheckBox("Symmetric scale around 0")
         self.center_cb.setToolTip(
-            "Sets the colorbar range to ±max(|values|) so the midpoint sits "
-            "at zero.\nUseful for anomalies, vorticity, wind components, or "
-            "any signed field."
+            "Center the colormap at 0 — useful for anomalies and signed fields."
         )
         self.center_cb.toggled.connect(self.center_zero_toggled)
         cf.addRow(self.center_cb)
