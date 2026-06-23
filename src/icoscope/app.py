@@ -521,6 +521,13 @@ class MainWindow(QMainWindow):
         """
         plotter = self._pane_container.pane(pane_idx).plotter
         plotter.remove_actor("empty", reset_camera=False, render=False)
+        # PyVista keeps the existing scalar-bar actor across add_mesh calls
+        # and only honours scalar_bar_args on first creation. Drop it so
+        # the new title / label / colour / format actually takes effect.
+        try:
+            plotter.remove_scalar_bar()
+        except (KeyError, IndexError):
+            pass
         theme = THEMES[self.theme_name]
         plotter.set_background(theme["bg"])
         st = self.state                          # tab-shared (overlays, theme)
@@ -783,15 +790,18 @@ class MainWindow(QMainWindow):
 
     # ── slots ─────────────────────────────────────
     def _on_reset_cameras(self) -> None:
-        """Reset every visible pane's camera to frame the sphere.
+        """Reset every visible pane's camera to the default isometric view.
 
-        Useful after zooming/panning in multiple panes — quick "back to a
-        clean view" without having to know VTK's built-in 'r' shortcut.
-        Also useful when a newly-revealed pane (after a layout switch)
-        doesn't end up at the expected default zoom for some reason.
+        Useful after zooming / panning in multiple panes — quick "back to
+        a clean view" without having to know VTK's built-in 'r'
+        shortcut. ``reset_camera()`` alone leaves the camera's pan offset
+        in place; ``view_isometric()`` aggressively repoints the focal
+        point at the origin, which is what users actually want here. Then
+        ``reset_camera()`` fits the sphere to the viewport.
         """
         for i in range(self._pane_container.n_visible):
             plotter = self._pane_container.pane(i).plotter
+            plotter.view_isometric()
             plotter.reset_camera()
             plotter.render()
 
