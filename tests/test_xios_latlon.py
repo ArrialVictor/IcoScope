@@ -301,24 +301,25 @@ def test_read_levels_falls_back_to_indices_without_coord_var():
         np.testing.assert_array_equal(levels, np.arange(5, dtype=float))
 
 
-def test_classify_var_accepts_one_dim_horizontal():
-    """_classify_var should work with 1-D horizontal (e.g. icosahedral (cell,))."""
+def test_classify_var_returns_time_dim_name():
+    """_classify_var should return the actual time-dim name (not a bool)."""
     from icoscope.loader import _classify_var
     # Static field on cell
-    assert _classify_var(("cell",), ("cell",), 0) == (False, 0)
-    # Time-varying on cell
-    assert _classify_var(("time", "cell"), ("cell",), 0) == (True, 0)
-    # Vertical on cell
-    assert _classify_var(("presnivs", "cell"), ("cell",), 5) == (False, 5)
+    assert _classify_var(("cell",), ("cell",), 0) == (None, 0)
+    # Time-varying on cell — returns the dim name
+    assert _classify_var(("time", "cell"), ("cell",), 0) == ("time", 0)
+    assert _classify_var(("time_counter", "cell"), ("cell",), 0) == ("time_counter", 0)
+    # Vertical on cell, no time
+    assert _classify_var(("presnivs", "cell"), ("cell",), 5) == (None, 5)
     # Time + vertical on cell
-    assert _classify_var(("time", "presnivs", "cell"), ("cell",), 5) == (True, 5)
+    assert _classify_var(("time", "presnivs", "cell"), ("cell",), 5) == ("time", 5)
 
 
 def test_classify_var_accepts_capital_time():
     """TIME_DIMS now includes 'Time'/'t' so WRF-style files aren't dropped."""
     from icoscope.loader import _classify_var
-    assert _classify_var(("Time", "lat", "lon"), ("lat", "lon"), 0) == (True, 0)
-    assert _classify_var(("t", "lat", "lon"), ("lat", "lon"), 0) == (True, 0)
+    assert _classify_var(("Time", "lat", "lon"), ("lat", "lon"), 0) == ("Time", 0)
+    assert _classify_var(("t", "lat", "lon"), ("lat", "lon"), 0) == ("t", 0)
 
 
 def test_file_context_caches_sniffer_and_dataset():
@@ -346,3 +347,82 @@ def test_read_field_with_context_matches_no_context():
         with FileContext(path) as ctx:
             via_ctx = read_field(path, "temp", time_index=2, context=ctx)
         np.testing.assert_array_equal(ref, via_ctx)
+
+
+def test_field_meta_carries_time_dim_name():
+    """FieldMeta should record which time dim each variable lives on."""
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "x.nc"
+        _make_xios_nc(path, with_time=True)
+        _, _, _, fields = load_grid(path)
+        # 'slp' is static
+        assert fields["slp"]["time_varying"] is False
+        assert fields["slp"]["time_dim_name"] is None
+        # 'temp' is time-varying on the 'time_counter' axis
+        assert fields["temp"]["time_varying"] is True
+        assert fields["temp"]["time_dim_name"] == "time_counter"
+
+
+def test_read_times_parses_gregorian():
+    """read_times converts the seconds-since coord into cftime datetimes."""
+    from icoscope.loader import read_times
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "x.nc"
+        nlon, nlat, n_t = 4, 4, 3
+        lon = np.linspace(0.0, 360.0, nlon, endpoint=False)
+        lat = np.linspace(-90.0, 90.0, nlat)
+        with Dataset(path, "w", format="NETCDF4") as ds:
+            ds.createDimension("lon", nlon)
+            ds.createDimension("lat", nlat)
+            ds.createDimension("time_counter", n_t)
+            ds.createVariable("lon", "f8", ("lon",))[:] = lon
+            ds.createVariable("lat", "f8", ("lat",))[:] = lat
+            v = ds.createVariable("time_counter", "f8", ("time_counter",))
+            # 0, 86400, 172800 seconds since 2025-02-01 → Feb 1, 2, 3
+            v[:] = [0.0, 86400.0, 172800.0]
+            v.units = "seconds since 2025-02-01 00:00:00"
+            v.calendar = "gregorian"
+        times = read_times(path, "time_counter")
+        assert times is not None
+        assert len(times) == 3
+        assert str(times[0])[:10] == "2025-02-01"
+        assert str(times[2])[:10] == "2025-02-03"
+
+
+def test_read_times_returns_none_without_coord_var():
+    """read_times falls back when the axis dim has no coord variable."""
+    from icoscope.loader import read_times
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "x.nc"
+        with Dataset(path, "w", format="NETCDF4") as ds:
+            ds.createDimension("time_counter", 5)
+            # No coord variable — only the dim
+        assert read_times(path, "time_counter") is None
+
+
+def test_read_times_returns_none_for_unparseable_units():
+    """Bad/missing units shouldn't blow up — return None and let the caller fall back."""
+    from icoscope.loader import read_times
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "x.nc"
+        with Dataset(path, "w", format="NETCDF4") as ds:
+            ds.createDimension("time_counter", 3)
+            v = ds.createVariable("time_counter", "f8", ("time_counter",))
+            v[:] = [0, 1, 2]
+            v.units = "seconds"   # missing the "since X" anchor
+        assert read_times(path, "time_counter") is None
+
+
+def test_filecontext_caches_times_per_axis():
+    """FileContext.get_times parses on first call, returns cached array after."""
+    from icoscope.loader import FileContext
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "x.nc"
+        _make_xios_nc(path, with_time=True)
+        # _make_xios_nc writes time_counter without units/calendar, so the
+        # parser returns None — but the *caching* path should still work.
+        with FileContext(path) as ctx:
+            first = ctx.get_times("time_counter")
+            second = ctx.get_times("time_counter")
+            # Both calls return the same object (cached).
+            assert first is second

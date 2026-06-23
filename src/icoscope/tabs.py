@@ -540,13 +540,17 @@ class FileTab(QWidget):
         """Forward to the inner display block."""
         self.display.set_grat_color(hex_str)
 
-    def set_time_steps(self, n_steps: int) -> None:
+    def set_time_axis(self, n_steps: int, times=None) -> None:
         """Forward to the inner display block."""
+        self.display.set_time_axis(n_steps, times)
+
+    def set_time_steps(self, n_steps: int) -> None:
+        """Forward to the inner display block (no datetime info; legacy alias)."""
         self.display.set_time_steps(n_steps)
 
-    def set_time_label(self, idx: int, total: int) -> None:
+    def set_time_label(self, idx: int) -> None:
         """Forward to the inner display block."""
-        self.display.set_time_label(idx, total)
+        self.display.set_time_label(idx)
 
     def set_levels(self, levels_pa) -> None:
         """Forward to the inner display block."""

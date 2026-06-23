@@ -42,8 +42,10 @@ import numpy as np
 
 FieldMeta = dict[str, Any]
 # Expected keys: units (str), long_name (str), shape (tuple), time_varying (bool),
-# n_levels (int — 0 if no vertical dim, otherwise the size of the `presnivs`
-# dim). dyn3d / XIOS files additionally set "kind" so callers can branch.
+# time_dim_name (str | None — the leading time dim's name, e.g. "time_counter",
+# or None for static fields), n_levels (int — 0 if no vertical dim, otherwise
+# the size of the `presnivs` dim). dyn3d / XIOS files additionally set "kind"
+# so callers can branch.
 
 LEVEL_DIM = "presnivs"
 # Time dim is named ``time`` in dyn3d, ``time_counter`` in XIOS, ``Time`` in
@@ -136,12 +138,13 @@ def load_grid(
             meta = _classify_var(var.dimensions, (cell_dim,), n_levels_avail)
             if meta is None:
                 continue
-            time_varying, n_levels = meta
+            time_dim_name, n_levels = meta
             fields[name] = {
                 "units": getattr(var, "units", ""),
                 "long_name": getattr(var, "long_name", name),
                 "shape": tuple(var.shape),
-                "time_varying": time_varying,
+                "time_varying": time_dim_name is not None,
+                "time_dim_name": time_dim_name,
                 "n_levels": n_levels,
             }
 
@@ -208,12 +211,13 @@ def _load_dyn3d_grid(
         meta = _classify_var(var.dimensions, coord_dims, n_levels_avail)
         if meta is None:
             continue
-        time_varying, n_levels = meta
+        time_dim_name, n_levels = meta
         fields[name] = {
             "units": getattr(var, "units", ""),
             "long_name": getattr(var, "long_name", name),
             "shape": tuple(var.shape),
-            "time_varying": time_varying,
+            "time_varying": time_dim_name is not None,
+            "time_dim_name": time_dim_name,
             "n_levels": n_levels,
             "kind": "dyn3d",
         }
@@ -225,26 +229,32 @@ def _classify_var(
     dims: tuple[str, ...],
     horizontal: tuple[str, ...],
     n_levels_avail: int,
-) -> tuple[bool, int] | None:
-    """Return ``(time_varying, n_levels)`` for a variable, or ``None`` to skip.
+) -> tuple[str | None, int] | None:
+    """Return ``(time_dim_name, n_levels)`` for a variable, or ``None`` to skip.
 
-    Accepts variables whose dims end in ``horizontal`` (e.g. ``(rlatu, rlonv)``
-    for dyn3d, ``(lat, lon)`` for XIOS, or just ``(cell,)`` for the icosahedral
-    CF-bounds path) and whose leading dims are some prefix of ``[time, presnivs]``.
-    Other layouts are skipped.
+    ``time_dim_name`` is the *actual name* of the variable's leading time
+    dim (e.g. ``"time_counter"`` or ``"Time"``) when one is present, else
+    ``None``. The name is used downstream to look up the variable's
+    datetime axis values via :func:`read_times`. ``n_levels`` is the size
+    of the ``presnivs`` dim when present, else 0.
+
+    Accepts variables whose dims end in ``horizontal`` (e.g. ``(rlatu,
+    rlonv)`` for dyn3d, ``(lat, lon)`` for XIOS, or just ``(cell,)`` for
+    the icosahedral CF-bounds path) and whose leading dims are some
+    prefix of ``[time, presnivs]``. Other layouts are skipped.
     """
     h_len = len(horizontal)
     if dims[-h_len:] != horizontal:
         return None
     leading = dims[:-h_len]
     if len(leading) == 0:
-        return False, 0
+        return None, 0
     if len(leading) == 1 and leading[0] in TIME_DIMS:
-        return True, 0
+        return leading[0], 0
     if len(leading) == 1 and leading[0] == LEVEL_DIM:
-        return False, n_levels_avail
+        return None, n_levels_avail
     if len(leading) == 2 and leading[0] in TIME_DIMS and leading[1] == LEVEL_DIM:
-        return True, n_levels_avail
+        return leading[0], n_levels_avail
     return None
 
 
@@ -336,12 +346,13 @@ def _load_xios_latlon_grid(
         meta = _classify_var(var.dimensions, coord_dims, n_levels_avail)
         if meta is None:
             continue
-        time_varying, n_levels = meta
+        time_dim_name, n_levels = meta
         fields[name] = {
             "units": getattr(var, "units", ""),
             "long_name": getattr(var, "long_name", name),
             "shape": tuple(var.shape),
-            "time_varying": time_varying,
+            "time_varying": time_dim_name is not None,
+            "time_dim_name": time_dim_name,
             "n_levels": n_levels,
             "kind": "xios",
         }
@@ -419,6 +430,25 @@ class FileContext:
             self.is_xios
             and self.ds.variables["lat"][0] < self.ds.variables["lat"][-1]
         )
+        # Lazy datetime-array cache keyed by time-axis name. Populated on
+        # first get_times(axis) call so files with multiple time axes only
+        # pay the parse cost for axes the user actually views.
+        self._times: dict[str, np.ndarray | None] = {}
+
+    def get_times(self, axis_name: str) -> np.ndarray | None:
+        """Return the parsed datetimes for ``axis_name``, or ``None``.
+
+        Returns ``None`` if the coord variable is missing or unparseable.
+        Caches per axis — first call parses, subsequent calls hit the cache.
+        Returned array contains ``cftime.datetime`` instances (the calendar
+        comes from the coord's ``calendar`` attribute; ``num2date`` picks the
+        right subclass).
+        """
+        if axis_name in self._times:
+            return self._times[axis_name]
+        result = _parse_times(self.ds, axis_name)
+        self._times[axis_name] = result
+        return result
 
     def close(self) -> None:
         """Close the underlying Dataset. Safe to call more than once."""
@@ -506,6 +536,44 @@ def _read_field_using(
     if is_xios and data.ndim == 2:
         return _flatten_xios_field(data, xios_south_first)
     return data
+
+
+def _parse_times(ds, axis_name: str) -> np.ndarray | None:
+    """Read + parse a time-axis coord variable into datetimes.
+
+    Used by :class:`FileContext.get_times` and :func:`read_times`. Returns
+    ``None`` when the coord variable is absent (e.g. subsetted file) or
+    when parsing fails (missing ``units``, unrecognised calendar, etc.) —
+    callers fall back to integer-index labels in that case.
+    """
+    if axis_name not in ds.variables:
+        return None
+    var = ds.variables[axis_name]
+    units = getattr(var, "units", None)
+    if not units or "since" not in units:
+        return None
+    calendar = getattr(var, "calendar", "standard")
+    try:
+        from netCDF4 import num2date
+        return np.asarray(num2date(var[:], units=units, calendar=calendar))
+    except Exception:
+        return None
+
+
+def read_times(path: str | Path, axis_name: str) -> np.ndarray | None:
+    """Return the parsed datetimes for time axis ``axis_name``, or ``None``.
+
+    Uses CF time conventions (``units: "<unit> since <epoch>"`` +
+    ``calendar:``). Falls back to ``None`` when the coord variable is
+    missing (subsetted file) or parsing fails; callers can use integer
+    indices as a label fallback in that case.
+
+    Library-style API. The GUI uses :meth:`FileContext.get_times` instead,
+    which caches the result per file open.
+    """
+    from netCDF4 import Dataset
+    with Dataset(path) as ds:
+        return _parse_times(ds, axis_name)
 
 
 def read_levels(path: str | Path) -> np.ndarray | None:
