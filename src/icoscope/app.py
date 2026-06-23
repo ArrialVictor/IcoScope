@@ -567,10 +567,12 @@ class MainWindow(QMainWindow):
             self.scalars = T
         elif color_by in file_fields and self.file_path:
             from .loader import read_field
+            ctx = self._file_cache.get("context") if self._file_cache else None
             self.scalars = read_field(
                 self.file_path, color_by,
                 time_index=self._file_state.time_index,
                 level_index=self._file_state.level_index,
+                context=ctx,
             )
         else:
             self.scalars = None
@@ -828,12 +830,18 @@ class MainWindow(QMainWindow):
         if not path:
             return
         try:
-            from .loader import load_grid, read_levels
+            from .loader import FileContext, load_grid, read_levels
             verts, cells, centers, fields = load_grid(path)
             levels = read_levels(path)
+            context = FileContext(path)
         except Exception as e:
             QMessageBox.critical(self, "Load failed", str(e))
             return
+        # Close any previous file's Dataset handle so we don't leak.
+        if self._file_cache is not None:
+            old_ctx = self._file_cache.get("context")
+            if old_ctx is not None:
+                old_ctx.close()
         self.file_path = path
         self._file_state.file_fields = fields
         self._file_state.file_levels = levels
@@ -850,6 +858,7 @@ class MainWindow(QMainWindow):
             "centers": np.asarray(centers),
             "fields": fields,
             "levels": levels,
+            "context": context,
         }
         self.panel.file_tab.set_file_loaded(True)
         self._sync_file_info(path)
@@ -882,6 +891,11 @@ class MainWindow(QMainWindow):
         """Drop the loaded file. Stays on the File tab — shows the empty sphere."""
         if not self.file_path:
             return
+        # Close the held-open Dataset before dropping the cache.
+        if self._file_cache is not None:
+            ctx = self._file_cache.get("context")
+            if ctx is not None:
+                ctx.close()
         self.file_path = None
         self._file_state.file_fields = {}
         self._file_state.file_levels = None
@@ -1127,9 +1141,10 @@ def run(
     if file_path:
         # Load the file's mesh + fields as if the user had clicked Open in
         # the File tab. _on_open_file's logic is reused via the cache path.
-        from .loader import load_grid, read_levels
+        from .loader import FileContext, load_grid, read_levels
         f_verts, f_cells, f_centers, fields = load_grid(file_path)
         levels = read_levels(file_path)
+        context = FileContext(file_path)
         w.file_path = file_path
         w._file_state.file_fields = fields
         w._file_state.file_levels = levels
@@ -1140,6 +1155,7 @@ def run(
             "centers": np.asarray(f_centers),
             "fields": fields,
             "levels": levels,
+            "context": context,
         }
         w.panel.file_tab.set_file_loaded(True)
         w._sync_file_info(file_path)

@@ -319,3 +319,30 @@ def test_classify_var_accepts_capital_time():
     from icoscope.loader import _classify_var
     assert _classify_var(("Time", "lat", "lon"), ("lat", "lon"), 0) == (True, 0)
     assert _classify_var(("t", "lat", "lon"), ("lat", "lon"), 0) == (True, 0)
+
+
+def test_file_context_caches_sniffer_and_dataset():
+    """FileContext holds the Dataset open + cached sniffer flags."""
+    from icoscope.loader import FileContext
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "x.nc"
+        _make_xios_nc(path)
+        with FileContext(path) as ctx:
+            assert ctx.is_dyn3d is False
+            assert ctx.is_xios is True
+            assert ctx.xios_south_first is True   # _make_xios_nc default
+            assert ctx.ds is not None
+        # closed after context manager exit
+        assert ctx.ds is None
+
+
+def test_read_field_with_context_matches_no_context():
+    """read_field with and without context returns identical data."""
+    from icoscope.loader import FileContext
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "x.nc"
+        _make_xios_nc(path, with_time=True)
+        ref = read_field(path, "temp", time_index=2)
+        with FileContext(path) as ctx:
+            via_ctx = read_field(path, "temp", time_index=2, context=ctx)
+        np.testing.assert_array_equal(ref, via_ctx)
