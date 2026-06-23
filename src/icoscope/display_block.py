@@ -89,6 +89,7 @@ class _DisplayBlock(QWidget):
 
     # Animation
     autorotate_toggled  = Signal(bool)
+    sync_cameras_toggled = Signal(bool)
 
     # Time (only emitted if with_time=True)
     time_changed        = Signal(int)
@@ -226,12 +227,23 @@ class _DisplayBlock(QWidget):
         anim = QGroupBox("Animation")
         al = QVBoxLayout(anim)
         # Auto-rotate lives in global / combined. Pane-mode side panels don't
-        # show it because the camera-sync toggle (later PR) decides how
-        # rotation propagates across panes.
+        # show it because rotation is a tab-shared interaction.
         if self.mode in ("combined", "global"):
             self.spin_cb = QCheckBox("Auto-rotate")
             self.spin_cb.toggled.connect(self.autorotate_toggled)
             al.addWidget(self.spin_cb)
+        # Camera sync only makes sense when there's >1 pane available —
+        # ship the toggle only on the global block (File-tab multi-pane).
+        # Default ON: rotating one pane mirrors across the others.
+        if self.mode == "global":
+            self.sync_cb = QCheckBox("Sync cameras")
+            self.sync_cb.setChecked(True)
+            self.sync_cb.setToolTip(
+                "Mirror camera moves across all visible panes "
+                "(rotation, pan, zoom)."
+            )
+            self.sync_cb.toggled.connect(self.sync_cameras_toggled)
+            al.addWidget(self.sync_cb)
 
         if not self.with_time:
             return anim
