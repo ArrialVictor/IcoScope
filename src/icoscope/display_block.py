@@ -33,6 +33,17 @@ SYNTHETIC_COLOR_BY = [
     "None", "Latitude", "Cell kind", "Mock temperature", "Realistic temperature",
 ]
 
+# Units displayed next to a picked cell's value when a synthetic colour scheme
+# is active. File fields read units from FieldMeta; synthetic schemes have no
+# metadata source, so the mapping is hardcoded here.
+SYNTHETIC_UNITS = {
+    "None": "",
+    "Latitude": "°",
+    "Cell kind": "",                    # categorical: 5 = pent, 6 = hex
+    "Mock temperature": "K",
+    "Realistic temperature": "K",
+}
+
 
 class _DisplayBlock(QWidget):
     """Standard display controls: Coloring + Overlays + Animation + Export.
