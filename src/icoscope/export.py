@@ -255,6 +255,13 @@ def save_export(window: QMainWindow, pane_container,
     pane_imgs: list[np.ndarray] = []
     rects: list[tuple[int, int, int, int]] = []
     if want_png:
+        # On HiDPI displays, plotter.screenshot returns device-pixel images
+        # (logical_size × devicePixelRatio × scale). Keep rects in device
+        # pixels too so the canvas matches the screenshots exactly and
+        # _normalise_tile doesn't silently LANCZOS-downsample to logical
+        # pixels — that would halve the effective resolution on a Retina
+        # screen regardless of the user's chosen quality preset.
+        dpr = pane_container.devicePixelRatioF()
         # 2×2 panes are nested in row-splitters, so pane.x()/y() are relative
         # to the inner row, not the container. mapTo() walks the parent chain
         # to give container-local pixels — without this, panes 0/1 land at
@@ -264,7 +271,10 @@ def save_export(window: QMainWindow, pane_container,
                                    transparent=choice.transparent)
             pane_imgs.append(img)
             origin = pane.mapTo(pane_container, QPoint(0, 0))
-            rects.append((origin.x(), origin.y(), pane.width(), pane.height()))
+            rects.append((int(round(origin.x() * dpr)),
+                          int(round(origin.y() * dpr)),
+                          int(round(pane.width() * dpr)),
+                          int(round(pane.height() * dpr))))
 
     try:
         if choice.png_composite:
