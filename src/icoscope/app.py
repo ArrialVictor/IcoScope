@@ -156,7 +156,13 @@ class MainWindow(QMainWindow):
         self.verts = verts
         self.cells = cells
         self.centers = np.asarray(centers)
-        self.scalars = None           # what we actually render
+        # Per-pane scalar arrays. Index i holds the rendered field for the
+        # i-th pane (or None when that pane has no field selected). The
+        # back-compat property ``self.scalars`` (below) aliases the
+        # currently-selected pane's array — falls back to pane 0 when no
+        # selection has been made yet (single-pane behaviour).
+        self._pane_scalars: list = [None] * PaneContainer.MAX_PANES
+        self._selected_pane: int | None = None
         # Last successful pick: (cell_idx, lon, lat) or None. Used to refresh
         # the status-bar value display after time/level slider scrubs without
         # forcing the user to re-pick.
@@ -319,6 +325,39 @@ class MainWindow(QMainWindow):
         return self._lonlat_state
 
     @property
+    def _active_pane_idx(self) -> int:
+        """Index of the pane the picker / single-scalar code path acts on.
+
+        For the File tab in multi-pane mode this is the user-selected pane;
+        elsewhere (or before any selection), pane 0.
+        """
+        idx = self._selected_pane
+        if idx is None:
+            return 0
+        if idx >= len(self.state.panes):
+            return 0
+        return idx
+
+    @property
+    def pane_state(self) -> PaneState:
+        """Active pane's :class:`PaneState` (selected, or pane 0 fallback)."""
+        return self.state.panes[self._active_pane_idx]
+
+    @property
+    def scalars(self):
+        """Back-compat alias for the active pane's scalar array.
+
+        Single-pane code paths (picker value display, the global ``_clim``
+        helper, etc.) read this; in multi-pane these will move to per-pane
+        helpers in stages 5–6.
+        """
+        return self._pane_scalars[self._active_pane_idx]
+
+    @scalars.setter
+    def scalars(self, value) -> None:
+        self._pane_scalars[self._active_pane_idx] = value
+
+    @property
     def active_tab(self):
         """Return the currently-active tab widget (Ico, LonLat, or File)."""
         idx = self.panel.tabs.currentIndex()
@@ -371,103 +410,134 @@ class MainWindow(QMainWindow):
         return QColor(c).name()
 
     # ── geometry ──────────────────────────────────
+    @staticmethod
+    def _pane_scalar_key(idx: int) -> str:
+        """Name of the per-pane scalar array stored on the shared mesh."""
+        return f"pane{idx}_scalars"
+
     def _to_polydata(self):
-        """Build a fresh PolyData from ``self.verts/cells/scalars``.
+        """Build a fresh PolyData from ``self.verts/cells`` + per-pane scalars.
 
         Expensive on a 64 k-cell mesh because of the Python loop assembling
         the ``faces_flat`` array. Only call when geometry actually changed
         (verts or cells differ); for scalar-only swaps (slider scrubs) use
         :meth:`_update_scalars_only`, which mutates the existing PolyData
         in place and avoids the loop.
+
+        Each pane's scalar array is bound to its own named key on the
+        polydata so panes can independently colour the shared geometry.
         """
         faces_flat = []
         for c in self.cells:
             faces_flat.append(len(c))
             faces_flat.extend(c)
         mesh = pv.PolyData(self.verts, faces=np.array(faces_flat, dtype=np.int64))
-        if self.scalars is not None:
-            mesh.cell_data["scalars"] = np.asarray(self.scalars)
+        for i, arr in enumerate(self._pane_scalars):
+            if arr is not None:
+                mesh.cell_data[self._pane_scalar_key(i)] = np.asarray(arr)
         return mesh
 
-    def _update_scalars_only(self) -> None:
-        """Swap the active scalars on the cached PolyData in place.
+    def _update_scalars_only(self, pane_idx: int | None = None) -> None:
+        """Swap one pane's scalars on the cached PolyData in place.
 
         Used in the slider-scrub hot path where geometry hasn't changed
-        between frames. Roughly an order of magnitude faster than
-        rebuilding the PolyData since it skips the ``faces_flat`` loop and
-        the VTK PolyData construction.
+        between frames. ``pane_idx=None`` updates the active pane only;
+        pass an explicit index to update a different pane (used during
+        layout-change re-renders).
         """
         if self._mesh is None:
-            # First-time safety net; nothing cached to mutate.
             self._mesh = self._to_polydata()
             return
-        if self.scalars is None:
-            if "scalars" in self._mesh.cell_data:
-                del self._mesh.cell_data["scalars"]
+        idx = self._active_pane_idx if pane_idx is None else pane_idx
+        key = self._pane_scalar_key(idx)
+        arr = self._pane_scalars[idx]
+        if arr is None:
+            if key in self._mesh.cell_data:
+                del self._mesh.cell_data[key]
         else:
-            self._mesh.cell_data["scalars"] = np.asarray(self.scalars)
+            self._mesh.cell_data[key] = np.asarray(arr)
 
-    def _clim(self):
-        if self.scalars is None or not self.state.center_zero:
+    def _clim(self, pane_idx: int | None = None):
+        """Colour-limit range for a pane's scalar array (or None for auto)."""
+        idx = self._active_pane_idx if pane_idx is None else pane_idx
+        arr = self._pane_scalars[idx]
+        pane = self.state.panes[idx]
+        if arr is None or not pane.center_zero:
             return None
-        s = np.asarray(self.scalars)
+        s = np.asarray(arr)
         a = float(np.nanmax(np.abs(s)))
         return [-a, a] if a > 0 else None
 
     # ── rendering ─────────────────────────────────
     def _build_scene(self):
-        # Defer to the empty-sphere path when there's no mesh to render
-        # (File tab pre-load, LonLat placeholder). This makes overlay
-        # toggles a no-op in that state instead of crashing.
+        """Render the current scene on every visible pane.
+
+        Each pane gets its own actor stack on its own ``QtInteractor``
+        (the shared mesh is rendered N times with N different scalar
+        bindings, plus a copy of the overlay actors per pane). Defers to
+        the empty-sphere fallback when there's no mesh yet.
+        """
         if self._mesh is None:
             self._render_empty_sphere()
             return
-        # Coming back from the empty-sphere state, the "empty" actor stays
-        # in the plotter unless we explicitly drop it — it would render
-        # underneath the real mesh.
-        self.plotter.remove_actor("empty", reset_camera=False, render=False)
-        theme = THEMES[self.theme_name]
-        self.plotter.set_background(theme["bg"])
-        st = self.state
+        for idx in range(self._pane_container.n_visible):
+            self._build_pane_scene(idx)
 
-        self.plotter.add_mesh(
+    def _build_pane_scene(self, pane_idx: int) -> None:
+        """Render the scene on pane ``pane_idx``'s plotter.
+
+        Each pane reads its own :class:`PaneState` (``cmap``, ``center_zero``,
+        ``colorbar_on``) and binds to its own per-pane scalar key on the
+        shared mesh. Overlays (coastlines, graticule, edges, theme) are
+        tab-shared so every visible pane gets the same overlay actors.
+        """
+        plotter = self._pane_container.pane(pane_idx).plotter
+        plotter.remove_actor("empty", reset_camera=False, render=False)
+        theme = THEMES[self.theme_name]
+        plotter.set_background(theme["bg"])
+        st = self.state                          # tab-shared (overlays, theme)
+        pane = self.state.panes[pane_idx]        # per-pane (cmap, etc.)
+        has_scalars = self._pane_scalars[pane_idx] is not None
+        scalar_key = self._pane_scalar_key(pane_idx) if has_scalars else None
+
+        plotter.add_mesh(
             self._mesh, name="grid",
-            scalars="scalars" if self.scalars is not None else None,
-            cmap=st.cmap,
-            clim=self._clim(),
+            scalars=scalar_key,
+            cmap=pane.cmap,
+            clim=self._clim(pane_idx),
             show_edges=st.edges_on,
             edge_color=self._edge_color(),
             line_width=st.edge_width,
             smooth_shading=False,
-            show_scalar_bar=st.colorbar_on and self.scalars is not None,
+            show_scalar_bar=pane.colorbar_on and has_scalars,
             reset_camera=False,
         )
 
         if st.coastlines_on:
             try:
                 cl = coastline_polydata(radius=1.001)
-                self.plotter.add_mesh(cl, name="coast",
-                                      color=self._coast_color(),
-                                      line_width=st.coast_width,
-                                      pickable=False, reset_camera=False)
+                plotter.add_mesh(cl, name="coast",
+                                 color=self._coast_color(),
+                                 line_width=st.coast_width,
+                                 pickable=False, reset_camera=False)
             except Exception as e:
                 self.statusBar().showMessage(f"coastlines failed: {e}")
         else:
-            self.plotter.remove_actor("coast", reset_camera=False, render=False)
+            plotter.remove_actor("coast", reset_camera=False, render=False)
 
         if st.graticule_on:
             try:
                 g = graticule_polydata(radius=1.002, spacing=30)
-                self.plotter.add_mesh(g, name="grat",
-                                      color=self._grat_color(),
-                                      line_width=st.grat_width,
-                                      opacity=0.6, pickable=False, reset_camera=False)
+                plotter.add_mesh(g, name="grat",
+                                 color=self._grat_color(),
+                                 line_width=st.grat_width,
+                                 opacity=0.6, pickable=False, reset_camera=False)
             except Exception as e:
                 self.statusBar().showMessage(f"graticule failed: {e}")
         else:
-            self.plotter.remove_actor("grat", reset_camera=False, render=False)
+            plotter.remove_actor("grat", reset_camera=False, render=False)
 
-        self.plotter.render()
+        plotter.render()
 
     # ── ESC: clear current selection + stop spin ──
     def _on_escape(self):
@@ -674,16 +744,24 @@ class MainWindow(QMainWindow):
     def _on_pane_layout(self, n_panes: int) -> None:
         """User picked View → Pane layout → Single / 1×2 / 2×2.
 
-        Reshuffles the :class:`PaneContainer`. Stage 3 of the multi-pane
-        scaffold (this commit): all visible panes still share the active
-        tab's single scene render. Stage 4 binds each pane to its own
-        :class:`PaneState`.
+        Reshuffles the :class:`PaneContainer`, grows :attr:`state.panes`
+        to match (newly-visible panes inherit pane 0's settings as
+        defaults), computes the new panes' scalar arrays, and renders.
         """
         self._pane_container.set_layout(n_panes)
         _menubar.sync_layout_checkmarks(
             getattr(self, "_layout_actions", {}), n_panes)
-        # self.plotter aliases pane 0's QtInteractor; nothing else moved
-        # so a re-render through the existing scene-build path is enough.
+        panes = self.state.panes
+        # Newly-visible panes inherit pane 0's settings so the user has
+        # a coherent starting point (see _design/multi-pane-comparison.md
+        # "Default on file open"). Use dataclasses.replace so each new
+        # pane is an independent copy.
+        from dataclasses import replace
+        while len(panes) < n_panes:
+            panes.append(replace(panes[0]))
+        for idx in range(n_panes):
+            self._refresh_scalars(idx)
+            self._update_scalars_only(idx)
         self._build_scene()
 
     def _on_theme(self, name):
@@ -722,22 +800,29 @@ class MainWindow(QMainWindow):
         self.state.edges_on = on
         self._build_scene()
 
-    def _refresh_scalars(self):
-        """Compute self.scalars from the current `color_by` choice."""
-        color_by = self.state.color_by
+    def _refresh_scalars(self, pane_idx: int | None = None) -> None:
+        """Compute a pane's scalar array from its :class:`PaneState`.
+
+        Defaults to the active pane (single-pane code paths); pass an
+        explicit ``pane_idx`` to recompute a different pane (used when
+        a layout change makes a previously-hidden pane visible).
+        """
+        idx = self._active_pane_idx if pane_idx is None else pane_idx
+        pane = self.state.panes[idx]
+        color_by = pane.color_by
         file_fields = self._file_state.file_fields
         if color_by == "Latitude":
-            self.scalars = np.degrees(np.arcsin(self.centers[:, 2]))
+            arr = np.degrees(np.arcsin(self.centers[:, 2]))
         elif color_by == "Cell kind":
-            self.scalars = np.array([0 if len(c) == 5 else 1 for c in self.cells],
-                                    dtype=float)
+            arr = np.array([0 if len(c) == 5 else 1 for c in self.cells],
+                           dtype=float)
         elif color_by == "Mock temperature":
             # Clean synthetic field: latitude gradient + a faint zonal wave.
             # Same formula as the `tas` field in tools/make_test_nc.py.
             c = self.centers / np.linalg.norm(self.centers, axis=1, keepdims=True)
             lat = np.arcsin(np.clip(c[:, 2], -1, 1))
             lon = np.arctan2(c[:, 1], c[:, 0])
-            self.scalars = 250.0 + 50.0 * np.cos(lat) + 5.0 * np.cos(2 * lon)
+            arr = 250.0 + 50.0 * np.cos(lat) + 5.0 * np.cos(2 * lon)
         elif color_by == "Realistic temperature":
             # Earth-like surface-temperature mock: base latitudinal gradient,
             # plus broad Gaussian "hot spots" over major land masses (Sahara,
@@ -771,18 +856,19 @@ class MainWindow(QMainWindow):
             T += gauss(-82,   0, -32, 22)   # Antarctic interior
             T += gauss( 65,  100, -8, 18)   # Siberian winter (mild proxy)
 
-            self.scalars = T
+            arr = T
         elif color_by in file_fields and self.file_path:
             from .loader import read_field
             ctx = self._file_cache.get("context") if self._file_cache else None
-            self.scalars = read_field(
+            arr = read_field(
                 self.file_path, color_by,
-                time_index=self._file_state.time_index,
-                level_index=self._file_state.level_index,
+                time_index=pane.time_index,
+                level_index=pane.level_index,
                 context=ctx,
             )
         else:
-            self.scalars = None
+            arr = None
+        self._pane_scalars[idx] = arr
 
     def _on_color_by(self, name):
         st = self.state
@@ -1230,27 +1316,32 @@ class MainWindow(QMainWindow):
         self._update_status()
 
     def _render_empty_sphere(self):
-        """Render a plain blank sphere (no cells, no overlays).
+        """Render a plain blank sphere on every visible pane.
 
         Used when a tab is active but has no mesh to show yet — the
         File tab before any NetCDF is loaded, and the LonLat placeholder
         tab. Conveys "this is the canvas, populate it" without leaking
         stale geometry from another tab into the view.
         """
-        self.plotter.clear()
-        self.plotter.set_background(THEMES[self.theme_name]["bg"])
+        bg = THEMES[self.theme_name]["bg"]
         # pv.Sphere uses theta/phi tessellation, which leaves visible latitude
         # rings even with smooth_shading on. Icosphere has no pole singularity
         # and no axis-aligned strips, so the surface reads as a clean sphere.
         sphere = pv.Icosphere(radius=1.0, nsub=5)
-        self.plotter.add_mesh(sphere, name="empty",
-                              color="#777777", show_edges=False,
-                              smooth_shading=True, reset_camera=False)
+        for idx in range(self._pane_container.n_visible):
+            plotter = self._pane_container.pane(idx).plotter
+            plotter.clear()
+            plotter.set_background(bg)
+            plotter.add_mesh(sphere, name="empty",
+                             color="#777777", show_edges=False,
+                             smooth_shading=True, reset_camera=False)
+            plotter.render()
         self._mesh = None
-        self.scalars = None
+        # Clear every pane's scalar array so a subsequent re-render isn't
+        # confused by stale data left over from a prior file.
+        self._pane_scalars = [None] * PaneContainer.MAX_PANES
         self.picker.invalidate_locator()
         self.picker.clear_highlight()
-        self.plotter.render()
         self._update_status()
 
     def _on_time_changed(self, idx):
