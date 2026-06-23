@@ -830,8 +830,12 @@ class MainWindow(QMainWindow):
 
         Reshuffles the :class:`PaneContainer`, grows :attr:`state.panes`
         to match (newly-visible panes inherit pane 0's settings as
-        defaults), computes the new panes' scalar arrays, and renders.
+        defaults), computes the new panes' scalar arrays, renders, and
+        resets the camera on freshly-revealed panes so the sphere fits
+        their viewport instead of starting at PyVista's default tight
+        zoom.
         """
+        prev_n = self._pane_container.n_visible
         self._pane_container.set_layout(n_panes)
         _menubar.sync_layout_checkmarks(
             getattr(self, "_layout_actions", {}), n_panes)
@@ -847,6 +851,11 @@ class MainWindow(QMainWindow):
             self._refresh_scalars(idx)
             self._update_scalars_only(idx)
         self._build_scene()
+        # Reset the camera on panes that just became visible — without
+        # this they use PyVista's pre-add-mesh default which can leave
+        # the sphere clipped or off-centre.
+        for idx in range(prev_n, n_panes):
+            self._pane_container.pane(idx).plotter.reset_camera()
 
     def _on_theme(self, name):
         self.theme_name = name
@@ -1379,22 +1388,12 @@ class MainWindow(QMainWindow):
 
     def _on_tab_changed(self, idx: int):
         """Tab is the active mesh source — swap the rendered scene accordingly."""
-        if idx == Tab.ICO:
-            self._regen_synthetic()
-        elif idx == Tab.LONLAT:
-            self._regen_lonlat()
-        elif idx == Tab.FILE:
-            if self._file_cache is not None:
-                self._activate_file_view()
-            else:
-                # No file loaded — show a plain empty sphere instead of
-                # whatever was last rendered. The File tab's overlay
-                # settings are ignored in this state since there's no
-                # geographic data to overlay onto.
-                self._render_empty_sphere()
-        # Multi-pane only applies on the File tab; collapse to Single layout
-        # and disable the Pane-layout menu when switching elsewhere. The
-        # selection model also resets — Ico/LonLat have nothing to select.
+        # Layout / selection housekeeping FIRST: the mesh regens below call
+        # _build_scene, which iterates over n_visible panes and indexes into
+        # self.state.panes — getting that consistent with the new tab's
+        # single-pane PaneState list before the regen prevents
+        # IndexError: list index out of range when leaving a multi-pane
+        # File-tab layout for Ico / LonLat.
         is_file_tab = idx == Tab.FILE
         for action in getattr(self, "_layout_actions", {}).values():
             action.setEnabled(is_file_tab)
@@ -1409,6 +1408,20 @@ class MainWindow(QMainWindow):
             # coherent "Pane 1 settings" view by default (matches the
             # design doc's "default on file open" behaviour).
             self._select_pane(0)
+
+        if idx == Tab.ICO:
+            self._regen_synthetic()
+        elif idx == Tab.LONLAT:
+            self._regen_lonlat()
+        elif idx == Tab.FILE:
+            if self._file_cache is not None:
+                self._activate_file_view()
+            else:
+                # No file loaded — show a plain empty sphere instead of
+                # whatever was last rendered. The File tab's overlay
+                # settings are ignored in this state since there's no
+                # geographic data to overlay onto.
+                self._render_empty_sphere()
         # Per-tab colour overrides may differ → refresh swatches.
         self._sync_color_buttons()
         # Auto-rotate is per-tab state but the timer is window-level — sync
