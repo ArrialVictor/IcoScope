@@ -575,7 +575,11 @@ class MainWindow(QMainWindow):
             scalar_bar_args=({"color": self._cbar_color(pane_idx),
                               "title_font_size": 12,
                               "label_font_size": 10,
-                              "fmt": "%.3g"}
+                              "fmt": "%.3g",
+                              # Match the side-panel "Pane N settings" header
+                              # which is also 1-indexed (was previously
+                              # 0-indexed via the raw scalar-key default).
+                              "title": f"Pane {pane_idx + 1}"}
                              if pane.colorbar_on and has_scalars else None),
             reset_camera=False,
         )
@@ -1010,6 +1014,13 @@ class MainWindow(QMainWindow):
             slider.setValue(min(max(pane.time_index, 0), n_t - 1))
             slider.blockSignals(False)
             ft.set_time_label(slider.value())
+        else:
+            # Field has no time axis — hide the slider row + play button so
+            # the user doesn't see leftover widgets from a previously-selected
+            # pane that did have one. Without this the play button stays
+            # clickable but _play_step instantly stops because the new field
+            # isn't time-varying.
+            ft.set_time_axis(0)
         if meta and meta.get("n_levels", 0) > 1 and self._file_state.file_levels is not None:
             n_l = meta["n_levels"]
             ft.set_levels(self._file_state.file_levels)
@@ -1018,6 +1029,9 @@ class MainWindow(QMainWindow):
             slider.setValue(min(max(pane.level_index, 0), n_l - 1))
             slider.blockSignals(False)
             ft.set_level_label(slider.value())
+        else:
+            # No vertical dim — same logic as the time row above.
+            ft.set_levels(None)
 
     def _on_pane_layout(self, n_panes: int) -> None:
         """User picked View → Pane layout → Single / 1×2 / 2×2.
