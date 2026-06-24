@@ -699,16 +699,6 @@ class MainWindow(QMainWindow):
         """
         plotter = self._pane_container.pane(pane_idx).plotter
         plotter.remove_actor("empty", reset_camera=False, render=False)
-        # PyVista keeps the existing scalar-bar actor across add_mesh calls
-        # and only honours scalar_bar_args on first creation. Drop it so
-        # the new title / label / colour / format actually takes effect.
-        # Suppress everything: PyVista's remove_scalar_bar raises various
-        # exceptions when there's no bar (KeyError, IndexError, or
-        # StopIteration depending on version) and the "nothing to remove"
-        # case is benign — first call on a fresh plotter, mostly.
-        import contextlib
-        with contextlib.suppress(KeyError, IndexError, StopIteration):
-            plotter.remove_scalar_bar()
         theme = THEMES[self.theme_name]
         plotter.set_background(theme["bg"])
         st = self.state                          # tab-shared (overlays, theme)
@@ -716,11 +706,47 @@ class MainWindow(QMainWindow):
         has_scalars = self._pane_scalars[pane_idx] is not None
         scalar_key = self._pane_scalar_key(pane_idx) if has_scalars else None
 
+        # Scalar-bar create-vs-update decision. PyVista honours
+        # ``scalar_bar_args`` only on first creation of a bar with a
+        # given title; subsequent ``add_mesh`` calls with the same args
+        # leave the existing bar's properties untouched (no harm, but no
+        # update either). When something the bar actually displays
+        # changes (cmap / clim / colour / title / on-off), we have to
+        # remove + recreate. When nothing user-visible about the bar
+        # changes (e.g. time scrub: scalars update in-place but cmap +
+        # clim stay), recreating it every frame produces a constant
+        # remove → empty → re-add flicker that's purely visual noise.
+        # Cache the last config per pane and skip the recreate when it
+        # matches.
+        clim_val = self._clim(pane_idx)
+        bar_on = pane.colorbar_on and has_scalars
+        cbar_color = self._cbar_color(pane_idx)
+        bar_title = f"Pane {pane_idx + 1}"
+        bar_args = {"color": cbar_color,
+                    "title_font_size": 12,
+                    "label_font_size": 10,
+                    "fmt": "%.3g",
+                    "title": bar_title}
+        bar_config = (bar_on, pane.cmap, tuple(clim_val) if clim_val else None,
+                      cbar_color, bar_title)
+        cache = getattr(self, "_last_bar_config", None)
+        if cache is None:
+            self._last_bar_config = {}
+            cache = self._last_bar_config
+        config_changed = cache.get(pane_idx) != bar_config
+        if config_changed:
+            # Suppress the multi-exception zoo PyVista raises when the
+            # bar doesn't exist yet (KeyError / IndexError / StopIteration
+            # depending on version).
+            import contextlib
+            with contextlib.suppress(KeyError, IndexError, StopIteration):
+                plotter.remove_scalar_bar()
+
         plotter.add_mesh(
             self._mesh, name="grid",
             scalars=scalar_key,
             cmap=pane.cmap,
-            clim=self._clim(pane_idx),
+            clim=clim_val,
             show_edges=st.edges_on,
             edge_color=self._edge_color(),
             line_width=st.edge_width,
@@ -732,18 +758,15 @@ class MainWindow(QMainWindow):
             # noticeably different brightness, which is misleading for
             # scientific viz where the colourmap is the message.
             lighting=False,
-            show_scalar_bar=pane.colorbar_on and has_scalars,
-            scalar_bar_args=({"color": self._cbar_color(pane_idx),
-                              "title_font_size": 12,
-                              "label_font_size": 10,
-                              "fmt": "%.3g",
-                              # Match the side-panel "Pane N settings" header
-                              # which is also 1-indexed (was previously
-                              # 0-indexed via the raw scalar-key default).
-                              "title": f"Pane {pane_idx + 1}"}
-                             if pane.colorbar_on and has_scalars else None),
+            show_scalar_bar=bar_on,
+            # ``scalar_bar_args`` is honoured only on bar creation —
+            # passing it when the bar already exists is a no-op anyway.
+            # Pass None on the unchanged path so we don't accidentally
+            # signal "create a bar" to a future PyVista version.
+            scalar_bar_args=bar_args if config_changed and bar_on else None,
             reset_camera=False,
         )
+        cache[pane_idx] = bar_config
 
         if st.coastlines_on:
             try:
