@@ -29,6 +29,8 @@ def build_menubar(
     on_theme: Callable[[str], None],
     on_pane_layout: Callable[[int], None] | None = None,
     on_reset_cameras: Callable[[], None] | None = None,
+    on_clim_shared: Callable[[bool], None] | None = None,
+    clim_shared_default: bool = True,
 ) -> tuple[dict[str, QAction], dict[int, QAction]]:
     """Build the ``View`` and ``Help`` menus on ``window``.
 
@@ -90,6 +92,20 @@ def build_menubar(
         layout_actions[n_panes] = act
     if on_pane_layout is None:
         layout_menu.setEnabled(False)
+
+    # View → Share colour range across panes. When checked (default),
+    # every pane showing the same field reads the same (min, max) so the
+    # colour ↔ value mapping is consistent across panes / times / levels
+    # — cross-pane comparison works. Off: each pane auto-scales its
+    # clim per-frame (best contrast for any single view but the same
+    # colour means different things across panes).
+    if on_clim_shared is not None:
+        view_menu.addSeparator()
+        clim_act = QAction("Share colour range across panes", window,
+                           checkable=True)
+        clim_act.setChecked(clim_shared_default)
+        clim_act.toggled.connect(on_clim_shared)
+        view_menu.addAction(clim_act)
 
     # View → Reset cameras. Resets the camera of every visible pane to
     # frame the sphere — useful after zooming/panning across multiple

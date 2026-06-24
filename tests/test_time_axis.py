@@ -75,3 +75,38 @@ def test_in_range_after():
 
 def test_in_range_empty():
     assert not is_in_range(datetime(2026, 1, 1), [])
+
+
+# ── last_previous_time_index ────────────────────────────────────────────
+from icoscope.time_axis import last_previous_time_index  # noqa: E402
+
+
+def test_last_previous_exact_match():
+    times = _daily(datetime(2026, 1, 1), 10)
+    assert last_previous_time_index(datetime(2026, 1, 4), times) == 3
+
+
+def test_last_previous_between_samples_returns_earlier():
+    times = [datetime(2026, 1, 1), datetime(2026, 2, 1), datetime(2026, 3, 1)]
+    # Mid-February → February's sample (1 Feb) is the latest at-or-before.
+    assert last_previous_time_index(datetime(2026, 2, 15), times) == 1
+
+
+def test_last_previous_before_first_clamps_to_zero():
+    times = _daily(datetime(2026, 1, 10), 5)
+    assert last_previous_time_index(datetime(2025, 12, 1), times) == 0
+
+
+def test_last_previous_after_last_returns_end():
+    times = _daily(datetime(2026, 1, 1), 5)
+    assert last_previous_time_index(datetime(2026, 6, 1), times) == 4
+
+
+def test_last_previous_single_sample():
+    assert last_previous_time_index(
+        datetime(2026, 1, 5), [datetime(2026, 1, 1)]) == 0
+
+
+def test_last_previous_empty_raises():
+    with pytest.raises(ValueError):
+        last_previous_time_index(datetime(2026, 1, 1), [])

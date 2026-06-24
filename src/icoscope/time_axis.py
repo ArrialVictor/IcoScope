@@ -62,6 +62,50 @@ def nearest_time_index(cursor: T, times: Sequence[T]) -> int:
     return best_idx
 
 
+def last_previous_time_index(cursor: T, times: Sequence[T]) -> int:
+    """Return the index of the latest sample at or before ``cursor``.
+
+    The "physically-correct" resolution mode for climate data, where a
+    sample dated ``t`` represents data that became valid AT ``t`` (a
+    monthly mean for January is typically stamped 1 Feb, reflecting
+    "data is now in for January"). A cursor on 15 Feb should therefore
+    surface January's mean (the latest sample whose timestamp ≤ cursor),
+    not February's (which isn't computed yet).
+
+    Parameters
+    ----------
+    cursor
+        A datetime-like value (``cftime.datetime``, ``datetime``,
+        ``numpy.datetime64``) supporting ``<=`` comparison with the
+        entries of ``times``.
+    times
+        Monotonic-ascending sequence of comparable values. Must be
+        non-empty.
+
+    Returns
+    -------
+    int
+        Index of the latest sample with ``times[i] <= cursor``. If the
+        cursor falls before every sample, clamps to 0 (no earlier sample
+        exists — show the first one rather than blanking the pane).
+
+    Raises
+    ------
+    ValueError
+        If ``times`` is empty — callers must guard against this.
+    """
+    n = len(times)
+    if n == 0:
+        raise ValueError("times is empty; no sample exists")
+    # Linear scan from the end — typical N is small and tail-of-axis
+    # lookups (during a scrub past the end) hit on the very first
+    # iteration. Could binary-search if N ever grows past a few thousand.
+    for i in range(n - 1, -1, -1):
+        if times[i] <= cursor:
+            return i
+    return 0
+
+
 def is_in_range(cursor: T, times: Sequence[T]) -> bool:
     """Return ``True`` if ``cursor`` falls inside ``[times[0], times[-1]]``.
 

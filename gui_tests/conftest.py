@@ -113,13 +113,13 @@ def make_main_window(qapp, synthetic_nc) -> Iterator:
 
     yield _build
 
-    # Deliberately do NOT call ``win.close()`` here. Closing a MainWindow
-    # inside the same QApplication lifetime crashes Qt/VTK on macOS
-    # (closing tears down the QtInteractor render windows in a way
-    # subsequent processEvents calls can't recover from). Instead drop
-    # the references and let process exit clean everything up — fine for
-    # the run-one-file-per-process pattern that tools/run_gui_tests.sh
-    # uses.
+    # Hide windows in teardown but do NOT call ``win.close()``. Closing
+    # tears down the QtInteractor render windows in a way subsequent
+    # processEvents calls can't recover from (segfault on macOS).
+    # ``hide()`` is safe — the window stays in memory until process exit
+    # but is removed from screen, so running the full suite doesn't
+    # accumulate 20+ visible MainWindows that the user then has to close
+    # by hand (each manual close triggers the VTK crash mid-test).
     for win in created:
         ctx = (win._file_cache or {}).get("context")
         if ctx is not None and hasattr(ctx, "close"):
@@ -127,6 +127,8 @@ def make_main_window(qapp, synthetic_nc) -> Iterator:
                 ctx.close()
             except Exception:
                 pass
+        win.hide()
+    QCoreApplication.processEvents()
     created.clear()
 
 

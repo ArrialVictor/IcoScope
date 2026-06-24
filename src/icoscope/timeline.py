@@ -21,13 +21,133 @@ from collections.abc import Sequence
 
 from qtpy.QtCore import Qt, Signal
 from qtpy.QtGui import QColor, QFontMetrics, QPainter, QPen
-from qtpy.QtWidgets import QSizePolicy, QVBoxLayout, QWidget
+from qtpy.QtWidgets import (
+    QComboBox,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QSizePolicy,
+    QSpinBox,
+    QVBoxLayout,
+    QWidget,
+)
+
+# Playback unit → simulated-seconds conversion. Months and years are
+# approximate (30-day month, 365-day year); the exact length doesn't
+# matter for the playback pace — it only sets how fast the cursor
+# advances per real second.
+PLAYBACK_UNIT_SECONDS = {
+    "day":   86_400,
+    "month": 30 * 86_400,
+    "year":  365 * 86_400,
+}
+PLAYBACK_UNITS = tuple(PLAYBACK_UNIT_SECONDS.keys())
+
+
+class PlaybackBar(QWidget):
+    """Header strip above the per-pane tracks: play + speed + loop.
+
+    Owns the time-playback controls for the multi-pane File tab. Values
+    are in *simulated time per real time* — "500 ms / day" means the
+    cursor advances one simulated day every 500 ms of wall clock. Lets
+    files mixing time axes (daily + monthly) play at a consistent
+    physical-time pace regardless of which pane is anchored: a monthly
+    pane holds the same value for ~15 s, a daily pane updates every
+    500 ms — both representing the same simulated period.
+
+    Signals
+    -------
+    play_toggled
+        ``True`` when the user pressed play; ``False`` on stop.
+    speed_changed
+        ``(value_ms, unit_name)`` — emitted when either the spinbox
+        value or the unit combo changes.
+    """
+
+    play_toggled = Signal(bool)
+    speed_changed = Signal(int, str)
+
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.setFixedHeight(30)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(4, 2, 4, 2)
+        layout.setSpacing(6)
+
+        self.play_btn = QPushButton("▶")
+        self.play_btn.setCheckable(True)
+        self.play_btn.setFixedSize(34, 24)
+        self.play_btn.toggled.connect(self._on_play_toggled)
+        layout.addWidget(self.play_btn)
+
+        layout.addWidget(QLabel("Speed:"))
+        self.speed_box = QSpinBox()
+        self.speed_box.setRange(10, 10000)
+        self.speed_box.setSingleStep(50)
+        self.speed_box.setValue(500)
+        self.speed_box.setSuffix(" ms")
+        self.speed_box.setFixedHeight(24)
+        self.speed_box.setKeyboardTracking(False)
+        self.speed_box.setToolTip(
+            "Wall-clock milliseconds per simulated time unit. Lower is "
+            "faster — '500 ms per day' takes half a second to advance one "
+            "simulated day."
+        )
+        self.speed_box.valueChanged.connect(self._emit_speed)
+        layout.addWidget(self.speed_box)
+
+        # 'per' connector between '500 ms' and the unit combo so the full
+        # rate reads naturally ('500 ms per day').
+        layout.addWidget(QLabel("per"))
+
+        self.unit_combo = QComboBox()
+        self.unit_combo.addItems(list(PLAYBACK_UNITS))
+        self.unit_combo.setFixedHeight(24)
+        # Widen the combo so day/month/year + the dropdown arrow have
+        # comfortable room — the default sizeHint was too tight.
+        self.unit_combo.setMinimumWidth(80)
+        self.unit_combo.currentTextChanged.connect(self._emit_speed)
+        layout.addWidget(self.unit_combo)
+
+        layout.addStretch(1)
+
+        # Cursor datetime label at the right edge — what was the side-
+        # panel's "datetime under the time slider" before that slider
+        # was retired. Anchored to the cursor visually since the strip's
+        # cursor line is at whatever datetime this label names.
+        self.cursor_label = QLabel("—")
+        self.cursor_label.setAlignment(Qt.AlignVCenter | Qt.AlignRight)
+        self.cursor_label.setStyleSheet("color: #888; font-size: 11px;")
+        layout.addWidget(self.cursor_label)
+
+    def _on_play_toggled(self, on: bool) -> None:
+        self.play_btn.setText("⏸" if on else "▶")
+        self.play_toggled.emit(on)
+
+    def _emit_speed(self) -> None:
+        self.speed_changed.emit(
+            self.speed_box.value(), self.unit_combo.currentText())
+
+    def set_cursor_label(self, text: str) -> None:
+        """Update the right-hand cursor datetime label (empty string → ``—``)."""
+        self.cursor_label.setText(text or "—")
+
+    def set_playing(self, playing: bool) -> None:
+        """Push the play-button state from outside (e.g. end-of-playback stop)."""
+        self.play_btn.blockSignals(True)
+        self.play_btn.setChecked(playing)
+        self.play_btn.setText("⏸" if playing else "▶")
+        self.play_btn.blockSignals(False)
 
 # Track height and total-strip height tuned to land under the viewports
 # without dominating the layout. Update both together if the row height
 # grows; the strip's setFixedHeight uses N × TRACK_HEIGHT + padding.
 TRACK_HEIGHT = 28
-LABEL_WIDTH = 96   # pixels reserved on the left for the track label
+# Track region widths, left to right:
+#   [lock button] [label] [plot area with dots + cursor] [value text]
+LOCK_WIDTH = 72       # toggle button on the very left — fits "Unlock" text
+LABEL_WIDTH = 96      # field-name label (clickable → select pane)
+VALUE_WIDTH = 96      # right-hand current-pick value
 HORIZONTAL_PADDING = 12
 
 
@@ -43,15 +163,29 @@ class Track(QWidget):
     label
         Short string shown left of the track (typically the field name).
 
+    The mouse press is split by region:
+
+    - Click on the lock area (very left) → :attr:`lock_clicked`.
+    - Click on the label area → :attr:`label_clicked`.
+    - Click on the plot area → :attr:`clicked_at` (drag continues this).
+
     Signals
     -------
     clicked_at
         Emitted with a fraction in ``[0, 1]`` mapped back to the shared
         datetime domain by the parent. The parent decides what to do
         with it (currently: set the master cursor).
+    label_clicked
+        Emitted with no payload when the user clicks the field-name
+        label — the parent reports it upward as "select this pane".
+    lock_clicked
+        Emitted with no payload when the user clicks the lock area —
+        the parent toggles the pane's time_locked state.
     """
 
     clicked_at = Signal(float)
+    label_clicked = Signal()
+    lock_clicked = Signal()
 
     def __init__(self, label: str, parent: QWidget | None = None):
         super().__init__(parent)
@@ -60,9 +194,27 @@ class Track(QWidget):
         self._domain_t0 = None          # parent-supplied range
         self._domain_t1 = None
         self._cursor_t = None
+        self._value_text = ""           # current-pick value, "" when no pick
+        self._locked = False
         self.setFixedHeight(TRACK_HEIGHT)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.setMouseTracking(False)
+        # Lock as a real QPushButton with imperative text ("Lock" when
+        # unlocked = "click to lock"; "Unlock" when locked = "click to
+        # unlock"). Emojis didn't render legibly at this size.
+        self._lock_btn = QPushButton("Lock", self)
+        self._lock_btn.setCheckable(True)
+        self._lock_btn.setFixedSize(LOCK_WIDTH - 4, TRACK_HEIGHT - 6)
+        self._lock_btn.move(2, 3)
+        self._lock_btn.setToolTip(
+            "Lock this pane to its current time — the master cursor will "
+            "skip it on subsequent scrubs."
+        )
+        # Don't toggle state on press — the window decides whether to
+        # honour the toggle (and pushes the new state back via
+        # set_locked). Block the default toggle so visual state is
+        # always authoritatively set by set_locked.
+        self._lock_btn.clicked.connect(self._on_lock_button_clicked)
 
     def set_samples(self, times: Sequence) -> None:
         """Replace the dot positions for this track."""
@@ -85,6 +237,51 @@ class Track(QWidget):
         self._label = label
         self.update()
 
+    def set_value(self, text: str) -> None:
+        """Update the right-hand value text (empty string hides it)."""
+        self._value_text = text or ""
+        self.update()
+
+    def set_locked(self, locked: bool) -> None:
+        """Set the lock visual + state (caller decides the semantics)."""
+        self._locked = bool(locked)
+        self._lock_btn.blockSignals(True)
+        self._lock_btn.setChecked(self._locked)
+        self._lock_btn.setText("Unlock" if self._locked else "Lock")
+        self._lock_btn.blockSignals(False)
+        self.update()
+
+    def _on_lock_button_clicked(self) -> None:
+        """Fire ``lock_clicked`` and revert the button's auto-toggle.
+
+        The window is the only authority on the visual state — it
+        decides whether to honour the toggle and pushes the new state
+        back via :meth:`set_locked`.
+        """
+        self._lock_btn.blockSignals(True)
+        self._lock_btn.setChecked(self._locked)
+        self._lock_btn.blockSignals(False)
+        self.lock_clicked.emit()
+
+    @property
+    def locked(self) -> bool:
+        """Current lock state (for tests)."""
+        return self._locked
+
+    @property
+    def value_text(self) -> str:
+        """Current value-column text (for tests)."""
+        return self._value_text
+
+    def _plot_x0(self) -> int:
+        """Left edge of the plot area in widget pixels."""
+        return LOCK_WIDTH + LABEL_WIDTH + HORIZONTAL_PADDING
+
+    def _plot_w(self) -> int:
+        """Width of the plot area (between left-pad and value column)."""
+        return (self.width() - LOCK_WIDTH - LABEL_WIDTH - VALUE_WIDTH
+                - 2 * HORIZONTAL_PADDING)
+
     def _x_for(self, t) -> float | None:
         """Map a datetime ``t`` to an x pixel within the plot area."""
         if (t is None or self._domain_t0 is None
@@ -99,24 +296,28 @@ class Track(QWidget):
         except AttributeError:
             ratio = (t - self._domain_t0) / total
         ratio = max(0.0, min(1.0, float(ratio)))
-        plot_w = self.width() - LABEL_WIDTH - 2 * HORIZONTAL_PADDING
-        return LABEL_WIDTH + HORIZONTAL_PADDING + ratio * plot_w
+        return self._plot_x0() + ratio * self._plot_w()
 
     def paintEvent(self, _event) -> None:
-        """Custom paint: label, baseline, sample dots, cursor line."""
+        """Custom paint: label, baseline, sample dots, cursor, value.
+
+        The lock control is a real QPushButton child widget (positioned
+        in ``__init__``), not painted here.
+        """
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
-
-        # Left-hand label, vertically centred and elided to fit.
-        p.setPen(QColor("#cccccc"))
         fm = QFontMetrics(p.font())
+
+        # Label, vertically centred and elided to fit. Slightly brighter when
+        # the pane is unlocked to telegraph that the label is clickable.
+        p.setPen(QColor("#cccccc"))
         elided = fm.elidedText(self._label, Qt.ElideRight, LABEL_WIDTH - 8)
-        p.drawText(4, 0, LABEL_WIDTH - 8, self.height(),
+        p.drawText(LOCK_WIDTH + 4, 0, LABEL_WIDTH - 8, self.height(),
                    Qt.AlignVCenter | Qt.AlignRight, elided)
 
         # Baseline — thin horizontal line across the plot area.
-        plot_x0 = LABEL_WIDTH + HORIZONTAL_PADDING
-        plot_x1 = self.width() - HORIZONTAL_PADDING
+        plot_x0 = self._plot_x0()
+        plot_x1 = plot_x0 + self._plot_w()
         baseline_y = self.height() // 2
         p.setPen(QPen(QColor("#555555"), 1))
         p.drawLine(plot_x0, baseline_y, plot_x1, baseline_y)
@@ -139,20 +340,48 @@ class Track(QWidget):
                 p.setPen(QPen(QColor("#ff7a3a"), 2))
                 p.drawLine(int(x), 2, int(x), self.height() - 2)
 
+        # Right-hand current-pick value (empty when no pick).
+        if self._value_text:
+            value_x = self.width() - VALUE_WIDTH - 2
+            p.setPen(QColor("#cccccc"))
+            elided = fm.elidedText(self._value_text, Qt.ElideRight,
+                                   VALUE_WIDTH - 4)
+            p.drawText(value_x, 0, VALUE_WIDTH - 4, self.height(),
+                       Qt.AlignVCenter | Qt.AlignRight, elided)
+
     def mousePressEvent(self, event) -> None:
-        """Map the click x to a fraction in [0, 1] and emit ``clicked_at``."""
+        """Route the click to the right region: label / plot.
+
+        Lock clicks come from the QPushButton's own ``clicked`` signal
+        (Qt swallows mouse events on child widgets before they reach the
+        parent), so we only handle label + plot here.
+        """
         x = event.position().x() if hasattr(event, "position") else event.x()
-        plot_x0 = LABEL_WIDTH + HORIZONTAL_PADDING
-        plot_w = self.width() - LABEL_WIDTH - 2 * HORIZONTAL_PADDING
+        if x < LOCK_WIDTH + LABEL_WIDTH:
+            # Anywhere left of the plot baseline that isn't the lock
+            # button is the label area — select this pane.
+            self.label_clicked.emit()
+            return
+        plot_w = self._plot_w()
         if plot_w <= 0:
             return
-        frac = max(0.0, min(1.0, (x - plot_x0) / plot_w))
+        frac = max(0.0, min(1.0, (x - self._plot_x0()) / plot_w))
         self.clicked_at.emit(float(frac))
 
     def mouseMoveEvent(self, event) -> None:
-        """Treat drag as a continuous cursor update (same path as click)."""
-        if event.buttons() & Qt.LeftButton:
-            self.mousePressEvent(event)
+        """Drag on the plot area continues the cursor update."""
+        if not (event.buttons() & Qt.LeftButton):
+            return
+        x = event.position().x() if hasattr(event, "position") else event.x()
+        # Only the plot region scrubs — dragging across the label / lock
+        # shouldn't keep firing cursor updates.
+        if x < LOCK_WIDTH + LABEL_WIDTH:
+            return
+        plot_w = self._plot_w()
+        if plot_w <= 0:
+            return
+        frac = max(0.0, min(1.0, (x - self._plot_x0()) / plot_w))
+        self.clicked_at.emit(float(frac))
 
 
 class TimelineStrip(QWidget):
@@ -160,12 +389,27 @@ class TimelineStrip(QWidget):
 
     Configured by the main window via :meth:`set_panes` whenever the
     visible-pane set changes (layout switch, color-by change, file open).
-    Emits :attr:`cursor_changed` with the absolute datetime the user
-    clicked / dragged to on any track; the window then propagates the
-    cursor to every pane through the existing master-cursor sync.
+
+    Signals
+    -------
+    cursor_changed
+        Absolute datetime the user clicked / dragged to on any track —
+        the window propagates it to every pane via the master-cursor sync.
+    pane_selected
+        Pane index whose label area the user clicked — alternative to
+        clicking the sphere; the window calls ``_select_pane`` with it.
+    lock_toggle_requested
+        Pane index whose lock icon the user clicked. The window inverts
+        that pane's ``time_locked`` state.
     """
 
-    cursor_changed = Signal(object)   # datetime — sent on any track click/drag
+    cursor_changed = Signal(object)
+    pane_selected = Signal(int)
+    lock_toggle_requested = Signal(int)
+    # Re-emitted from the embedded PlaybackBar so the window only needs
+    # to connect to the strip for every multi-pane time interaction.
+    play_toggled = Signal(bool)
+    speed_changed = Signal(int, str)
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
@@ -175,6 +419,13 @@ class TimelineStrip(QWidget):
         self._layout = QVBoxLayout(self)
         self._layout.setContentsMargins(4, 4, 4, 4)
         self._layout.setSpacing(2)
+        # Playback bar at the top — the play / speed / loop controls used
+        # to live in the side panel but they belong with the timeline
+        # since they're about advancing along time.
+        self.playback_bar = PlaybackBar(self)
+        self.playback_bar.play_toggled.connect(self.play_toggled)
+        self.playback_bar.speed_changed.connect(self.speed_changed)
+        self._layout.addWidget(self.playback_bar)
         self.setVisible(False)
 
     def set_panes(self, panes: Sequence[tuple[str, Sequence]]) -> None:
@@ -194,10 +445,17 @@ class TimelineStrip(QWidget):
             track = self._tracks.pop()
             self._layout.removeWidget(track)
             track.deleteLater()
-        # Add tracks if we're growing.
+        # Add tracks if we're growing. Wire the per-region signals up here
+        # so the index in our list always matches the pane index the
+        # window cares about.
         while len(self._tracks) < len(panes):
+            idx = len(self._tracks)
             track = Track("", self)
             track.clicked_at.connect(self._on_track_clicked)
+            track.label_clicked.connect(
+                lambda i=idx: self.pane_selected.emit(i))
+            track.lock_clicked.connect(
+                lambda i=idx: self.lock_toggle_requested.emit(i))
             self._tracks.append(track)
             self._layout.addWidget(track)
 
@@ -216,16 +474,42 @@ class TimelineStrip(QWidget):
             track.set_domain(self._domain_t0, self._domain_t1)
 
         # Fix the overall strip height so the splitter doesn't resize it.
+        # Height = playback bar + tracks + per-row spacing + outer margins.
         self.setFixedHeight(
-            len(panes) * TRACK_HEIGHT + len(panes) * 2  # spacing
-            + 8                                          # outer margins
+            self.playback_bar.height()
+            + len(panes) * TRACK_HEIGHT
+            + (len(panes) + 1) * 2   # spacing between bar + tracks
+            + 8                       # outer margins
         )
         self.setVisible(True)
 
-    def set_cursor(self, t) -> None:
-        """Move the shared cursor on every track to datetime ``t``."""
-        for track in self._tracks:
+    def set_cursors(self, cursors: Sequence) -> None:
+        """Set each track's cursor independently.
+
+        Locked panes keep their cursor at their pinned datetime
+        regardless of the master cursor's position, so the cursor bar
+        on a locked track stays where the data is — not where the
+        master cursor moved to. Length mismatch is silently clamped
+        to the shorter.
+        """
+        for track, t in zip(self._tracks, cursors, strict=False):
             track.set_cursor(t)
+
+    def set_pane_values(self, values: Sequence[str]) -> None:
+        """Update each track's right-hand value text.
+
+        Pass an empty string for a track that has no pick / no value;
+        the value column hides on empty. Length mismatch is silently
+        clamped to the shorter — caller is responsible for passing one
+        entry per visible pane.
+        """
+        for track, text in zip(self._tracks, values, strict=False):
+            track.set_value(text)
+
+    def set_pane_locked(self, pane_idx: int, locked: bool) -> None:
+        """Update the lock icon on track ``pane_idx``."""
+        if 0 <= pane_idx < len(self._tracks):
+            self._tracks[pane_idx].set_locked(locked)
 
     def _on_track_clicked(self, frac: float) -> None:
         """Convert a track-fraction back to a datetime and emit upward."""

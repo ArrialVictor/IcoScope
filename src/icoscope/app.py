@@ -52,6 +52,11 @@ class PaneState:
     cbar_color_override: str | None = None
     time_index: int = 0
     level_index: int = 0
+    # Per-pane time lock — when True, the master cursor (timeline drag
+    # or other pane's slider scrub) does not update this pane's
+    # time_index. Useful for "current vs baseline" comparisons where
+    # one pane stays pinned to a fixed time while the others sweep.
+    time_locked: bool = False
 
 
 @dataclass
@@ -89,10 +94,24 @@ class _TabState:
     # time dims (daily + monthly) stay aligned. ``None`` while no
     # time-varying field is on screen (also for the Ico/LonLat tabs).
     time_cursor: object = None
-    # Playback loops by default — wraps to the start at the end of the time
-    # axis. Unticking the Loop checkbox makes playback stop at the last
-    # frame instead. Tab-shared (same semantics as autorotate).
-    loop_playback: bool = True
+    # Field-keyed colour-limit cache (file tab only). Filled lazily on
+    # first need by ``_compute_field_clim``; cleared on file unload. With
+    # ``MainWindow.clim_shared`` on (default), every pane displaying the
+    # same field reads the same (min, max) here so cross-pane comparison
+    # is meaningful (same colour = same physical value).
+    clim_cache: dict = field(default_factory=dict)
+    # Field-keyed "symmetric around 0" flag. In shared mode this is the
+    # source of truth; toggling it on any pane propagates to every pane
+    # showing the same field. In per-pane mode (``clim_shared=False``)
+    # it's ignored and ``PaneState.center_zero`` is used directly.
+    clim_symmetric: dict = field(default_factory=dict)
+    # Playback speed in *simulated time per real time* — see
+    # ``timeline.PlaybackBar`` for the rationale (multi-axis files need
+    # a physical-time-anchored pace so a monthly pane and a daily pane
+    # play at consistent rates instead of one of them jumping by 30×).
+    # 500 ms / day = one simulated day per half-second of wall clock.
+    playback_speed_value: int = 500
+    playback_speed_unit: str = "day"
     # Per-pane state. Default to a single pane; the File tab may grow this
     # list to 2 or 4 entries when the user picks a multi-pane layout.
     panes: list = field(default_factory=lambda: [PaneState()])
@@ -189,6 +208,13 @@ class MainWindow(QMainWindow):
         # see _their_ cameras change and would loop without it.
         self._camera_sync_on: bool = True
         self._syncing_cameras: bool = False
+        # Shared colour range across all visible panes that display the
+        # same field — keeps colour ↔ value mapping consistent for
+        # cross-pane / cross-time / cross-level comparison. Tradeoff:
+        # narrow sub-ranges (e.g. stratospheric temp on a global temp
+        # clim) lose contrast. View → Share colour range across panes
+        # toggles this; off → per-pane auto-clim (PyVista per-frame).
+        self._clim_shared: bool = True
         # Last successful pick: (cell_idx, lon, lat) or None. Used to refresh
         # the status-bar value display after time/level slider scrubs without
         # forcing the user to re-pick.
@@ -251,6 +277,14 @@ class MainWindow(QMainWindow):
         va_layout.addWidget(self._pane_container, stretch=1)
         self._timeline_strip = TimelineStrip(viewport_area)
         self._timeline_strip.cursor_changed.connect(self._on_timeline_cursor_changed)
+        self._timeline_strip.pane_selected.connect(self._on_pane_clicked)
+        self._timeline_strip.lock_toggle_requested.connect(
+            self._on_timeline_lock_toggled)
+        # Playback controls moved from the side panel into the strip's
+        # header — they're about advancing along time, so they belong with
+        # the timeline. Single source of truth via the strip.
+        self._timeline_strip.play_toggled.connect(self._on_play_toggled)
+        self._timeline_strip.speed_changed.connect(self._on_playback_speed_changed)
         va_layout.addWidget(self._timeline_strip)
         self.splitter.addWidget(viewport_area)
         self.plotter = self._pane_container.pane(0).plotter
@@ -278,6 +312,8 @@ class MainWindow(QMainWindow):
             self, self.theme_name, self._on_theme,
             on_pane_layout=self._on_pane_layout,
             on_reset_cameras=self._on_reset_cameras,
+            on_clim_shared=self._on_clim_shared_toggled,
+            clim_shared_default=self._clim_shared,
         )
         self._build_lonlat_widget()
         self.statusBar().showMessage("ready")
@@ -340,9 +376,10 @@ class MainWindow(QMainWindow):
         self.panel.file_tab.close_file_clicked.connect(self._on_close_file)
         self.panel.file_tab.time_changed.connect(self._on_time_changed)
         self.panel.file_tab.level_changed.connect(self._on_level_changed)
-        self.panel.file_tab.play_toggled.connect(self._on_play_toggled)
-        self.panel.file_tab.play_speed_changed.connect(self._on_play_speed_changed)
-        self.panel.file_tab.loop_toggled.connect(self._on_loop_toggled)
+        # NOTE: File-tab play / speed / loop signals are no longer
+        # connected — the controls live on the timeline strip now. The
+        # side panel's display_pane still emits them (dead signals) for
+        # back-compat with the other tabs' combined display block.
         self.panel.tabs.currentChanged.connect(self._on_tab_changed)
 
         # Cached meshes so tab-switching doesn't trigger expensive recomputes.
@@ -534,17 +571,140 @@ class MainWindow(QMainWindow):
             self._mesh.cell_data[key] = np.asarray(arr)
 
     def _clim(self, pane_idx: int | None = None):
-        """Colour-limit range for a pane's scalar array (or None for auto)."""
+        """Colour-limit range for a pane's scalar array (or None for auto).
+
+        Three modes:
+
+        - Shared mode + file field — returns the field's cached global
+          range so every pane showing the same field uses the same
+          colour ↔ value mapping (cross-pane / cross-time / cross-level
+          comparison works). Cache is filled lazily on first access via
+          :meth:`_compute_field_clim`.
+        - Shared mode + symmetric — returns ``(-M, +M)`` where ``M`` is
+          ``max(abs(min), abs(max))`` of the cached range. Same
+          colour = same value, just centred on 0.
+        - Per-pane mode (``clim_shared=False``) or symmetric on a
+          non-file field — falls back to the per-pane scalar array.
+          ``None`` lets PyVista auto-scale per frame (this was the
+          pre-PR default for non-symmetric panes; the cross-pane
+          comparison failures it caused are why shared mode is the
+          new default).
+        """
         idx = self._active_pane_idx if pane_idx is None else pane_idx
         arr = self._pane_scalars[idx]
         pane = self.state.panes[idx]
+        field = pane.color_by
+        file_fields = self._file_state.file_fields
+        is_file_field = field in file_fields and self.file_path is not None
+
+        if self._clim_shared and is_file_field:
+            # Shared mode: clim_symmetric is the SOLE source of truth.
+            # Fall back to ``False`` (not pane.center_zero) for fields
+            # never explicitly toggled, so a pane that briefly had a
+            # different color_by with a stale per-pane center_zero
+            # can't drag the shared value off course.
+            symmetric = self._file_state.clim_symmetric.get(field, False)
+            lo_hi = self._cached_field_clim(field)
+            if lo_hi is None:
+                return None
+            lo, hi = lo_hi
+            if symmetric:
+                a = max(abs(lo), abs(hi))
+                return [-a, a] if a > 0 else None
+            return [lo, hi]
+
+        # Per-pane fallback: original behaviour. Auto-scale unless
+        # symmetric is on, in which case derive from this pane's array.
         if arr is None or not pane.center_zero:
             return None
         s = np.asarray(arr)
         a = float(np.nanmax(np.abs(s)))
         return [-a, a] if a > 0 else None
 
+    def _cached_field_clim(self, field: str) -> tuple[float, float] | None:
+        """Return the cached ``(min, max)`` for ``field``; compute on miss."""
+        cache = self._file_state.clim_cache
+        if field in cache:
+            return cache[field]
+        lo_hi = self._compute_field_clim(field)
+        if lo_hi is not None:
+            cache[field] = lo_hi
+        return lo_hi
+
+    def _compute_field_clim(self, field: str) -> tuple[float, float] | None:
+        """Stream the field in time-step chunks; return its global ``(min, max)``.
+
+        Reads one timestep at a time (each ICOLMDZ slab is ~20 MB) and
+        accumulates a running min/max. Total cost: ~1–2 s on SSD for a
+        full daily-output `temp` (~570 MB). Status-bar message keeps
+        the user informed during the wait. Cache stores result in
+        ``_file_state.clim_cache`` so subsequent accesses are O(1).
+
+        Runs **atomically** — no ``processEvents()`` inside the loop. An
+        earlier draft pumped events between slabs to keep the UI
+        responsive, but that opened a re-entrancy window where the user
+        could close the file (or otherwise mutate state) mid-scan and
+        the loop would keep reading via the stale FileContext. Better
+        to freeze the UI briefly than to silently corrupt state.
+        """
+        meta = self._file_state.file_fields.get(field)
+        if not meta or self.file_path is None:
+            return None
+        from .loader import read_field
+        ctx = self._file_cache.get("context") if self._file_cache else None
+        # One processEvents() before the loop to actually paint the
+        # status message; none during the loop (see docstring).
+        self.statusBar().showMessage(
+            f"Computing colour range for {field}…", 0)
+        QApplication.processEvents()
+        try:
+            n_time = meta["shape"][0] if meta.get("time_varying") else 1
+            n_levels = meta.get("n_levels", 0)
+            lo, hi = float("inf"), float("-inf")
+            for t in range(n_time):
+                if n_levels > 1:
+                    for lev in range(n_levels):
+                        arr = read_field(self.file_path, field,
+                                         time_index=t, level_index=lev,
+                                         context=ctx)
+                        if arr is None or arr.size == 0:
+                            continue
+                        a = np.asarray(arr)
+                        lo = min(lo, float(np.nanmin(a)))
+                        hi = max(hi, float(np.nanmax(a)))
+                else:
+                    arr = read_field(self.file_path, field,
+                                     time_index=t if meta.get("time_varying") else None,
+                                     context=ctx)
+                    if arr is None or arr.size == 0:
+                        continue
+                    a = np.asarray(arr)
+                    lo = min(lo, float(np.nanmin(a)))
+                    hi = max(hi, float(np.nanmax(a)))
+        finally:
+            self.statusBar().clearMessage()
+        if not np.isfinite(lo) or not np.isfinite(hi):
+            return None
+        return (lo, hi)
+
     # ── rendering ─────────────────────────────────
+    def _render_visible_panes(self) -> None:
+        """Re-render every visible pane without reconfiguring its actors.
+
+        Cheaper than :meth:`_build_scene` — skips the per-pane
+        ``add_mesh`` call, which (despite same actor name) is what makes
+        PyVista tear down + recreate the scalar-bar actor and produces
+        the colourbar flicker during time/level scrubs. Use this on any
+        path that only updated the cell scalar arrays in place via
+        :meth:`_update_scalars_only`; the bound polydata has already
+        changed and the mapper picks it up on the next render.
+        """
+        if self._mesh is None:
+            self._render_empty_sphere()
+            return
+        for idx in range(self._pane_container.n_visible):
+            self._pane_container.pane(idx).plotter.render()
+
     def _build_scene(self):
         """Render the current scene on every visible pane.
 
@@ -569,16 +729,6 @@ class MainWindow(QMainWindow):
         """
         plotter = self._pane_container.pane(pane_idx).plotter
         plotter.remove_actor("empty", reset_camera=False, render=False)
-        # PyVista keeps the existing scalar-bar actor across add_mesh calls
-        # and only honours scalar_bar_args on first creation. Drop it so
-        # the new title / label / colour / format actually takes effect.
-        # Suppress everything: PyVista's remove_scalar_bar raises various
-        # exceptions when there's no bar (KeyError, IndexError, or
-        # StopIteration depending on version) and the "nothing to remove"
-        # case is benign — first call on a fresh plotter, mostly.
-        import contextlib
-        with contextlib.suppress(KeyError, IndexError, StopIteration):
-            plotter.remove_scalar_bar()
         theme = THEMES[self.theme_name]
         plotter.set_background(theme["bg"])
         st = self.state                          # tab-shared (overlays, theme)
@@ -586,27 +736,70 @@ class MainWindow(QMainWindow):
         has_scalars = self._pane_scalars[pane_idx] is not None
         scalar_key = self._pane_scalar_key(pane_idx) if has_scalars else None
 
+        # Scalar-bar create-vs-update decision. PyVista honours
+        # ``scalar_bar_args`` only on first creation of a bar with a
+        # given title; subsequent ``add_mesh`` calls with the same args
+        # leave the existing bar's properties untouched (no harm, but no
+        # update either). When something the bar actually displays
+        # changes (cmap / clim / colour / title / on-off), we have to
+        # remove + recreate. When nothing user-visible about the bar
+        # changes (e.g. time scrub: scalars update in-place but cmap +
+        # clim stay), recreating it every frame produces a constant
+        # remove → empty → re-add flicker that's purely visual noise.
+        # Cache the last config per pane and skip the recreate when it
+        # matches.
+        clim_val = self._clim(pane_idx)
+        bar_on = pane.colorbar_on and has_scalars
+        cbar_color = self._cbar_color(pane_idx)
+        bar_title = f"Pane {pane_idx + 1}"
+        bar_args = {"color": cbar_color,
+                    "title_font_size": 12,
+                    "label_font_size": 10,
+                    "fmt": "%.3g",
+                    "title": bar_title}
+        bar_config = (bar_on, pane.cmap, tuple(clim_val) if clim_val else None,
+                      cbar_color, bar_title)
+        cache = getattr(self, "_last_bar_config", None)
+        if cache is None:
+            self._last_bar_config = {}
+            cache = self._last_bar_config
+        config_changed = cache.get(pane_idx) != bar_config
+        if config_changed:
+            # Suppress the multi-exception zoo PyVista raises when the
+            # bar doesn't exist yet (KeyError / IndexError / StopIteration
+            # depending on version).
+            import contextlib
+            with contextlib.suppress(KeyError, IndexError, StopIteration):
+                plotter.remove_scalar_bar()
+
         plotter.add_mesh(
             self._mesh, name="grid",
             scalars=scalar_key,
             cmap=pane.cmap,
-            clim=self._clim(pane_idx),
+            clim=clim_val,
             show_edges=st.edges_on,
             edge_color=self._edge_color(),
             line_width=st.edge_width,
             smooth_shading=False,
-            show_scalar_bar=pane.colorbar_on and has_scalars,
-            scalar_bar_args=({"color": self._cbar_color(pane_idx),
-                              "title_font_size": 12,
-                              "label_font_size": 10,
-                              "fmt": "%.3g",
-                              # Match the side-panel "Pane N settings" header
-                              # which is also 1-indexed (was previously
-                              # 0-indexed via the raw scalar-key default).
-                              "title": f"Pane {pane_idx + 1}"}
-                             if pane.colorbar_on and has_scalars else None),
+            # Disable per-camera lighting so the displayed colour is the
+            # colormap value, period — not modulated by the head light's
+            # angle to the surface. Without this, two panes with cameras
+            # at slightly different positions render the same data at
+            # noticeably different brightness, which is misleading for
+            # scientific viz where the colourmap is the message.
+            lighting=False,
+            show_scalar_bar=bar_on,
+            # Always pass args when the bar is on. PyVista honours them
+            # only on bar creation — if the bar exists this is a no-op,
+            # but ``add_mesh`` internally tears down + recreates linked
+            # scalar bars in some versions, so we have to be ready to
+            # re-supply the styling (otherwise the recreated bar uses
+            # PyVista's defaults — notably black text instead of the
+            # user-chosen colour).
+            scalar_bar_args=bar_args if bar_on else None,
             reset_camera=False,
         )
+        cache[pane_idx] = bar_config
 
         if st.coastlines_on:
             try:
@@ -979,6 +1172,9 @@ class MainWindow(QMainWindow):
             self._set_lonlat(lon, lat)
         if hasattr(self, "value_label"):
             self._set_cell_value(cell_idx, lon=lon, lat=lat)
+        # Surface the same cell's value on every track of the timeline
+        # strip (each pane has its own scalar field at this cell).
+        self._refresh_timeline_pane_values()
 
     def _select_pane(self, idx: int | None) -> None:
         """Programmatic selection helper (used by clicks, Escape, tab switches).
@@ -1013,8 +1209,17 @@ class MainWindow(QMainWindow):
         ft.set_color_by(pane.color_by)
         ft.set_cmap(pane.cmap)
         block = ft.display_pane
+        # Shared mode: clim_symmetric is the SOLE source of truth.
+        # Default to False for fields never explicitly toggled (matches
+        # the dict-default in _clim, so checkbox state and rendered
+        # clim agree). Per-pane mode: read pane.center_zero.
+        if self._clim_shared:
+            shown_symmetric = self._file_state.clim_symmetric.get(
+                pane.color_by, False)
+        else:
+            shown_symmetric = pane.center_zero
         block.center_cb.blockSignals(True)
-        block.center_cb.setChecked(pane.center_zero)
+        block.center_cb.setChecked(shown_symmetric)
         block.center_cb.blockSignals(False)
         block.bar_cb.blockSignals(True)
         block.bar_cb.setChecked(pane.colorbar_on)
@@ -1280,7 +1485,58 @@ class MainWindow(QMainWindow):
         self._build_scene()
 
     def _on_center_zero(self, on):
-        self.pane_state.center_zero = on
+        """User toggled the per-pane 'Symmetric scale around 0' checkbox.
+
+        Shared mode: ``_file_state.clim_symmetric[field]`` is the single
+        source of truth; ``_clim`` and ``_sync_pane_widgets`` read from
+        it (never from per-pane ``center_zero``). Just write the field's
+        entry — no propagation loop needed, because nothing reads the
+        per-pane copies in shared mode.
+
+        Per-pane mode: ``pane.center_zero`` is the source of truth and
+        is what ``_clim`` reads. Write only the per-pane copy.
+        """
+        field = self.pane_state.color_by
+        if self._clim_shared and field and field != "None":
+            self._file_state.clim_symmetric[field] = on
+        else:
+            self.pane_state.center_zero = on
+        self._build_scene()
+
+    def _on_clim_shared_toggled(self, on: bool) -> None:
+        """User flipped View → Share colour range across panes.
+
+        On enable: snapshot every visible pane's current ``center_zero``
+        into the field-shared dict, with active-pane wins on conflicts.
+        After this the per-pane ``center_zero`` is dead state in shared
+        mode (writes/reads go through the dict).
+
+        On disable: write each visible pane's effective shared value
+        BACK into its ``center_zero`` so the symmetric visual stays
+        consistent across the mode switch (no silent flip to autoscale).
+        """
+        self._clim_shared = on
+        if on:
+            # Snapshot: any field not in the dict gets seeded from a
+            # pane currently showing it; active pane wins outright.
+            for i in range(self._pane_container.n_visible):
+                pane = self.state.panes[i]
+                if pane.color_by and pane.color_by != "None":
+                    self._file_state.clim_symmetric.setdefault(
+                        pane.color_by, pane.center_zero)
+            ap = self.state.panes[self._active_pane_idx]
+            if ap.color_by and ap.color_by != "None":
+                self._file_state.clim_symmetric[ap.color_by] = ap.center_zero
+        else:
+            # Carry the shared value back into each visible pane's
+            # per-pane state so the visual doesn't change at the moment
+            # the user flips the toggle — they'll see the same colourbar
+            # they had a second ago, just now governed by per-pane state.
+            for i in range(self._pane_container.n_visible):
+                pane = self.state.panes[i]
+                if pane.color_by in self._file_state.clim_symmetric:
+                    pane.center_zero = \
+                        self._file_state.clim_symmetric[pane.color_by]
         self._build_scene()
 
     def _on_edge_color(self, hex_str):
@@ -1357,6 +1613,10 @@ class MainWindow(QMainWindow):
                 p.render()
         self._clear_lonlat()
         self._clear_cell_value()
+        # Clear per-track value columns on the timeline strip too — there's
+        # no pick anymore, no value to surface per pane.
+        if hasattr(self, "_timeline_strip"):
+            self._refresh_timeline_pane_values()
         if deselect_pane:
             self._select_pane(None)
 
@@ -1565,6 +1825,14 @@ class MainWindow(QMainWindow):
         self._file_state.color_by = "None"
         self._file_state.time_index = 0
         self._file_state.level_index = 0
+        # Clim cache + symmetric dict are keyed by field name; if the
+        # new file happens to share a name with the previous file (e.g.
+        # 'tas' in both), the cached (min, max) from the previous file
+        # would render the new file with the wrong colour range. Drop
+        # them on every file open, not just on explicit close.
+        self._file_state.time_cursor = None
+        self._file_state.clim_cache = {}
+        self._file_state.clim_symmetric = {}
         self._file_cache = {
             "path": path,
             "verts": verts,
@@ -1614,6 +1882,12 @@ class MainWindow(QMainWindow):
         self._file_state.file_fields = {}
         self._file_state.file_levels = None
         self._file_state.time_cursor = None
+        # Clim cache holds per-field min/max keyed against this file's
+        # variables; useless once the file is gone, and would silently
+        # serve wrong values if a different file with same field names
+        # is loaded next.
+        self._file_state.clim_cache = {}
+        self._file_state.clim_symmetric = {}
         self._file_cache = None
         # Hide any stale banners — the file they referenced is gone.
         for i in range(self._pane_container.MAX_PANES):
@@ -1808,7 +2082,9 @@ class MainWindow(QMainWindow):
             self.panel.file_tab.set_time_label(idx)
         self._sync_cursor_from_pane(self._active_pane_idx)
         self._refresh_picked_value()
-        self._build_scene()
+        # Scrubs only mutate cell scalars in place — cheap re-render is
+        # enough and avoids the colourbar flicker caused by add_mesh.
+        self._render_visible_panes()
 
     def _update_pane_banner(self, pane_idx: int) -> None:
         """Show / hide the out-of-range banner on pane ``pane_idx``.
@@ -1839,13 +2115,20 @@ class MainWindow(QMainWindow):
         )
 
     def _resolve_pane_to_cursor(self, pane_idx: int) -> int:
-        """Return the time index that puts ``pane_idx`` closest to the cursor.
+        """Return the time index that surfaces ``pane_idx``'s data for the cursor.
+
+        Uses :func:`last_previous_time_index` — the physically-correct
+        resolution for climate data (a sample stamped ``t`` represents
+        the period preceding ``t``, so a cursor on April 15 should show
+        March's monthly mean, not April's). See ``time_axis.py`` for the
+        full reasoning; future settings work may expose a "nearest"
+        alternative for visualisation use cases.
 
         Falls back to 0 when there's no cursor yet, the pane's field has
         no time axis, or the axis can't be parsed. Caller is responsible
         for writing the result back to ``pane.time_index``.
         """
-        from .time_axis import nearest_time_index
+        from .time_axis import last_previous_time_index
         cursor = self._file_state.time_cursor
         if cursor is None:
             return 0
@@ -1854,7 +2137,7 @@ class MainWindow(QMainWindow):
         times = self._times_for(meta) if meta else None
         if times is None or len(times) == 0:
             return 0
-        return nearest_time_index(cursor, times)
+        return last_previous_time_index(cursor, times)
 
     def _sync_cursor_from_pane(self, anchor_idx: int) -> None:
         """Take the anchor pane's time_index, store as master cursor, propagate.
@@ -1880,19 +2163,24 @@ class MainWindow(QMainWindow):
         Shared entry point used both by side-panel slider scrubs (via
         :meth:`_sync_cursor_from_pane`) and by direct drags on the bottom
         timeline strip. Each visible pane's ``time_index`` shifts to the
-        nearest sample on its own axis. The active pane's side-panel
-        slider follows along (signals blocked so we don't re-enter), and
-        the timeline strip's cursor marker is updated.
+        latest sample at or before the cursor on its own axis (the
+        physically-correct resolution for climate data — see
+        :func:`last_previous_time_index`), **unless that pane has
+        ``time_locked=True``** (the user pinned it to a fixed time via
+        the timeline-strip lock). The active pane's side-panel slider
+        follows along (signals blocked so we don't re-enter), and the
+        timeline strip's cursor marker + per-pane value column are
+        updated.
         """
-        from .time_axis import nearest_time_index
+        from .time_axis import last_previous_time_index
         self._file_state.time_cursor = cursor
         for i in range(self._pane_container.n_visible):
             pane = self.state.panes[i]
-            if cursor is not None:
+            if cursor is not None and not pane.time_locked:
                 meta = self._file_state.file_fields.get(pane.color_by)
                 times = self._times_for(meta) if meta else None
                 if times is not None and len(times) > 0:
-                    new_idx = nearest_time_index(cursor, times)
+                    new_idx = last_previous_time_index(cursor, times)
                     if new_idx != pane.time_index:
                         pane.time_index = new_idx
             self._refresh_scalars(i)
@@ -1907,12 +2195,69 @@ class MainWindow(QMainWindow):
             slider.setValue(self.state.panes[active].time_index)
             slider.blockSignals(False)
             self.panel.file_tab.set_time_label(slider.value())
-        self._timeline_strip.set_cursor(cursor)
+        self._refresh_timeline_cursors()
+        # Each pane's scalar field now corresponds to a different time
+        # slice — re-render the per-track value column from _last_pick.
+        self._refresh_timeline_pane_values()
+
+    def _on_timeline_lock_toggled(self, pane_idx: int) -> None:
+        """User clicked the lock icon on track ``pane_idx`` — invert state."""
+        if pane_idx >= len(self.state.panes):
+            return
+        pane = self.state.panes[pane_idx]
+        was_locked = pane.time_locked
+        pane.time_locked = not was_locked
+        self._timeline_strip.set_pane_locked(pane_idx, pane.time_locked)
+        if was_locked:
+            # Just unlocked — the pane is now following the master cursor
+            # again. Re-propagate so its time_index + scalars + render
+            # catch up to wherever the cursor moved while it was locked.
+            self._set_master_cursor(self._file_state.time_cursor)
+            self._build_scene()
+        else:
+            # Just locked — pane stops following; only the per-track
+            # cursor visual needs updating (data stays where it was).
+            self._refresh_timeline_cursors()
+
+    def _refresh_timeline_pane_values(self) -> None:
+        """Populate each track's value column from ``_last_pick``.
+
+        Walks every visible pane and formats its current scalar at the
+        picked cell (cells are shared geometry, so the index is universal).
+        Tracks whose pane has no scalars yet (e.g. color_by is "None")
+        get an empty string and hide their value column.
+        """
+        if not hasattr(self, "_timeline_strip"):
+            return
+        if self._last_pick is None:
+            self._timeline_strip.set_pane_values(
+                [""] * self._pane_container.n_visible)
+            return
+        cell_idx, _lon, _lat = self._last_pick
+        values: list[str] = []
+        from .formatters import format_cell_value
+        for i in range(self._pane_container.n_visible):
+            arr = self._pane_scalars[i]
+            pane = self.state.panes[i]
+            if (arr is None or cell_idx >= len(arr)
+                    or pane.color_by == "None"):
+                values.append("")
+                continue
+            v = float(arr[cell_idx])
+            meta = self._file_state.file_fields.get(pane.color_by)
+            units = meta.get("units", "") if meta else ""
+            short, _ = format_cell_value(v, units)
+            # format_cell_value returns "Value: X K"; strip the "Value: "
+            # prefix — the track label already names the field.
+            if short.startswith("Value: "):
+                short = short[len("Value: "):]
+            values.append(short)
+        self._timeline_strip.set_pane_values(values)
 
     def _on_timeline_cursor_changed(self, cursor) -> None:
         """User dragged the timeline strip — set the master cursor + render."""
         self._set_master_cursor(cursor)
-        self._build_scene()
+        self._render_visible_panes()
 
     def _refresh_timeline_strip(self) -> None:
         """Rebuild the bottom timeline from the current visible-pane state.
@@ -1932,7 +2277,13 @@ class MainWindow(QMainWindow):
             pane = self.state.panes[i]
             meta = self._file_state.file_fields.get(pane.color_by)
             times = self._times_for(meta) if meta else None
-            label = pane.color_by if pane.color_by != "None" else f"Pane {i + 1}"
+            # Prefix the track label with the 1-indexed pane number so the
+            # strip is self-describing. Just the number (not "Pane N") to
+            # keep the prefix short when the field name is long — track
+            # ordering matches viewport ordering, so the surrounding
+            # context makes "1:" unambiguous.
+            label = (f"{i + 1}: {pane.color_by}"
+                     if pane.color_by != "None" else f"Pane {i + 1}")
             if times is not None and len(times) > 0:
                 any_time_varying = True
                 tracks.append((label, list(times)))
@@ -1942,7 +2293,43 @@ class MainWindow(QMainWindow):
             self._timeline_strip.set_panes([])
             return
         self._timeline_strip.set_panes(tracks)
-        self._timeline_strip.set_cursor(self._file_state.time_cursor)
+        # Rebuilding tracks resets their lock visuals — push the persisted
+        # per-pane state back so a layout change doesn't silently unlock.
+        for i in range(self._pane_container.n_visible):
+            self._timeline_strip.set_pane_locked(
+                i, self.state.panes[i].time_locked)
+        self._refresh_timeline_cursors()
+        self._refresh_timeline_pane_values()
+
+    def _refresh_timeline_cursors(self) -> None:
+        """Push per-track cursor positions to the strip.
+
+        Locked panes keep their cursor pinned at the datetime
+        corresponding to their frozen ``time_index``; unlocked panes
+        follow the master cursor. Computing per-track lets a locked
+        track's bar stay where the data actually is, instead of
+        drifting with the master cursor that the pane is ignoring.
+        """
+        master = self._file_state.time_cursor
+        cursors: list = []
+        for i in range(self._pane_container.n_visible):
+            pane = self.state.panes[i]
+            if pane.time_locked:
+                meta = self._file_state.file_fields.get(pane.color_by)
+                times = self._times_for(meta) if meta else None
+                if times is not None and pane.time_index < len(times):
+                    cursors.append(times[pane.time_index])
+                else:
+                    cursors.append(None)
+            else:
+                cursors.append(master)
+        self._timeline_strip.set_cursors(cursors)
+        # Right-edge cursor datetime label on the strip — replaces the
+        # side panel's "datetime under the time slider" that retired
+        # along with the time row in pane mode.
+        from .formatters import short_datetime
+        text = short_datetime(master) if master is not None else ""
+        self._timeline_strip.playback_bar.set_cursor_label(text)
 
     def _on_level_changed(self, idx):
         if idx == self.pane_state.level_index:
@@ -1951,17 +2338,16 @@ class MainWindow(QMainWindow):
         self._refresh_scalars()
         self._refresh_picked_value()
         self._update_scalars_only()
-        self._build_scene()
+        # Same scalar-scrub optimisation as _on_time_changed.
+        self._render_visible_panes()
 
     def _on_play_toggled(self, on):
         self.playback.toggle_play(on)
 
-    def _on_play_speed_changed(self, ms):
-        self.playback.set_speed(ms)
-
-    def _on_loop_toggled(self, on: bool) -> None:
-        """User toggled the playback Loop checkbox."""
-        self._file_state.loop_playback = on
+    def _on_playback_speed_changed(self, value_ms: int, unit: str) -> None:
+        """User changed the strip's speed spinbox or unit combo."""
+        self._file_state.playback_speed_value = value_ms
+        self._file_state.playback_speed_unit = unit
 
     def _on_spin(self, on):
         if on:

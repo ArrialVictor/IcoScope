@@ -32,9 +32,9 @@ def test_strip_shows_one_track_per_visible_pane(make_main_window):
     _set_field(win, 1, "tas_daily")
     assert win._timeline_strip.isVisible()
     assert len(win._timeline_strip._tracks) == 2
-    # Labels follow color_by.
-    assert win._timeline_strip._tracks[0]._label == "tas_t"
-    assert win._timeline_strip._tracks[1]._label == "tas_daily"
+    # Labels are 1-indexed pane number + color_by.
+    assert win._timeline_strip._tracks[0]._label == "1: tas_t"
+    assert win._timeline_strip._tracks[1]._label == "2: tas_daily"
 
 
 def test_strip_hides_on_ico_tab(make_main_window):
