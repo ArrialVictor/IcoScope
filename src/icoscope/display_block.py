@@ -95,7 +95,6 @@ class _DisplayBlock(QWidget):
     time_changed        = Signal(int)
     play_toggled        = Signal(bool)
     play_speed_changed  = Signal(int)
-    loop_toggled        = Signal(bool)
 
     # Vertical level (only emitted if with_time=True; gated by current field)
     level_changed       = Signal(int)
@@ -225,6 +224,12 @@ class _DisplayBlock(QWidget):
 
     def _build_animation_group(self) -> QGroupBox:
         anim = QGroupBox("Animation")
+        # Saved so set_levels / set_time_axis can hide the whole group
+        # when every child row is empty (otherwise the user sees a
+        # labelled-but-empty box — e.g. File-tab pane mode with no
+        # vertical-level dim has time + speed hidden by the strip and
+        # level hidden by lack of presnivs, leaving the group blank).
+        self._anim_group = anim
         al = QVBoxLayout(anim)
         # Auto-rotate lives in global / combined. Pane-mode side panels don't
         # show it because rotation is a tab-shared interaction.
@@ -319,22 +324,11 @@ class _DisplayBlock(QWidget):
         self.speed_box.setKeyboardTracking(False)
         self.speed_box.valueChanged.connect(self.play_speed_changed)
         srow.addWidget(self.speed_box, stretch=1)
-        # Loop checkbox sits next to Step — both belong to "what does play do".
-        # Default ON so users get the existing wrap-to-zero behaviour without
-        # any setting change; un-tick to make playback stop at the last frame.
-        self.loop_cb = QCheckBox("Loop")
-        self.loop_cb.setChecked(True)
-        self.loop_cb.setToolTip(
-            "When checked, playback wraps back to the start at the end of "
-            "the time axis. When unchecked, playback stops at the last frame."
-        )
-        self.loop_cb.toggled.connect(self.loop_toggled)
-        srow.addWidget(self.loop_cb)
         al.addWidget(self.speed_row)
         self.speed_row.setVisible(False)
-        # Speed / Loop are on the strip's PlaybackBar in pane mode — keep
-        # this row in the widget tree (for back-compat references) but
-        # never show it.
+        # Speed is on the strip's PlaybackBar in pane mode — keep this
+        # row in the widget tree (for back-compat references) but never
+        # show it.
         self._pane_mode_hides_speed_row = (self.mode == "pane")
 
         # Vertical-level slider: shown only when the active field has a
@@ -443,6 +437,32 @@ class _DisplayBlock(QWidget):
             self.time_row.setVisible(False)
             self.speed_row.setVisible(False)
             self.play_btn.setChecked(False)
+        self._refresh_anim_group_visibility()
+
+    def _refresh_anim_group_visibility(self) -> None:
+        """Hide the Animation group when every child row is hidden.
+
+        Pane mode hides time + speed rows wholesale (the strip owns
+        those); when the active field also has no vertical levels the
+        Animation group ends up empty and labelled, which looks broken.
+        Combined / global blocks always have something in the group
+        (auto-rotate, sync_cameras, etc.) so the hide only triggers
+        for the File-tab pane block.
+        """
+        if not hasattr(self, "_anim_group"):
+            return
+        # Anything else visible? autorotate (combined/global) or
+        # sync_cameras (global) lives in the group too; if either is
+        # there the group has content. In pane mode neither is built,
+        # so visibility reduces to "any of the time-aware rows visible".
+        has_content = (
+            getattr(self, "spin_cb", None) is not None
+            or getattr(self, "sync_cb", None) is not None
+            or (hasattr(self, "time_row") and self.time_row.isVisible())
+            or (hasattr(self, "speed_row") and self.speed_row.isVisible())
+            or (hasattr(self, "level_row") and self.level_row.isVisible())
+        )
+        self._anim_group.setVisible(has_content)
 
     # Back-compat alias: the per-tab caller used to be set_time_steps(n).
     # Keep it routed at the new datetime-aware setter so existing callers
@@ -488,12 +508,14 @@ class _DisplayBlock(QWidget):
             self.level_row.setVisible(False)
             self._levels_pa = None
             self._levels_are_indices = False
+            self._refresh_anim_group_visibility()
             return
         import numpy as np
         self._levels_pa = np.asarray(levels_pa, dtype=float)
         self._levels_are_indices = bool(np.array_equal(
             self._levels_pa, np.arange(len(self._levels_pa), dtype=float)))
         self.level_row.setVisible(True)
+        self._refresh_anim_group_visibility()
         self.level_slider.blockSignals(True)
         self.level_slider.setRange(0, len(self._levels_pa) - 1)
         self.level_slider.setValue(0)

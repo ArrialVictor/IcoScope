@@ -94,10 +94,6 @@ class _TabState:
     # time dims (daily + monthly) stay aligned. ``None`` while no
     # time-varying field is on screen (also for the Ico/LonLat tabs).
     time_cursor: object = None
-    # Playback loop is OFF by default — climate users typically want
-    # playback to stop at the simulation's end rather than silently
-    # restarting. Tick the Loop checkbox to enable wrap-to-start.
-    loop_playback: bool = False
     # Playback speed in *simulated time per real time* — see
     # ``timeline.PlaybackBar`` for the rationale (multi-axis files need
     # a physical-time-anchored pace so a monthly pane and a daily pane
@@ -271,7 +267,6 @@ class MainWindow(QMainWindow):
         # the timeline. Single source of truth via the strip.
         self._timeline_strip.play_toggled.connect(self._on_play_toggled)
         self._timeline_strip.speed_changed.connect(self._on_playback_speed_changed)
-        self._timeline_strip.loop_toggled.connect(self._on_loop_toggled)
         va_layout.addWidget(self._timeline_strip)
         self.splitter.addWidget(viewport_area)
         self.plotter = self._pane_container.pane(0).plotter
@@ -2100,10 +2095,6 @@ class MainWindow(QMainWindow):
         """User changed the strip's speed spinbox or unit combo."""
         self._file_state.playback_speed_value = value_ms
         self._file_state.playback_speed_unit = unit
-
-    def _on_loop_toggled(self, on: bool) -> None:
-        """User toggled the playback Loop checkbox."""
-        self._file_state.loop_playback = on
 
     def _on_spin(self, on):
         if on:

@@ -143,14 +143,13 @@ class Playback:
         new_cursor = cursor + timedelta(seconds=seconds_per_tick)
 
         if new_cursor > t1:
-            if state.loop_playback:
-                new_cursor = t0
-            else:
-                # Land exactly on the last frame, then stop so the user
-                # sees where the simulation ended.
-                w._set_master_cursor(t1)
-                self._stop_and_uncheck()
-                return
+            # Land exactly on the last frame, then stop so the user sees
+            # where the simulation ended. (Loop-and-restart was removed
+            # at user request — climate researchers prefer the explicit
+            # end-of-data signal.)
+            w._set_master_cursor(t1)
+            self._stop_and_uncheck()
+            return
 
         w._set_master_cursor(new_cursor)
         w._build_scene()

@@ -22,7 +22,6 @@ from collections.abc import Sequence
 from qtpy.QtCore import Qt, Signal
 from qtpy.QtGui import QColor, QFontMetrics, QPainter, QPen
 from qtpy.QtWidgets import (
-    QCheckBox,
     QComboBox,
     QHBoxLayout,
     QLabel,
@@ -63,13 +62,10 @@ class PlaybackBar(QWidget):
     speed_changed
         ``(value_ms, unit_name)`` — emitted when either the spinbox
         value or the unit combo changes.
-    loop_toggled
-        ``True`` when looping is on (default).
     """
 
     play_toggled = Signal(bool)
     speed_changed = Signal(int, str)
-    loop_toggled = Signal(bool)
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
@@ -89,19 +85,20 @@ class PlaybackBar(QWidget):
         self.speed_box.setRange(10, 10000)
         self.speed_box.setSingleStep(50)
         self.speed_box.setValue(500)
+        self.speed_box.setSuffix(" ms")
         self.speed_box.setFixedHeight(24)
         self.speed_box.setKeyboardTracking(False)
         self.speed_box.setToolTip(
             "Wall-clock milliseconds per simulated time unit. Lower is "
-            "faster — '500 ms / day' takes half a second to advance one "
+            "faster — '500 ms per day' takes half a second to advance one "
             "simulated day."
         )
         self.speed_box.valueChanged.connect(self._emit_speed)
         layout.addWidget(self.speed_box)
 
-        # "ms /" outside the spinbox so the box reads cleanly and the
-        # full unit equation ('500 ms / day') is visible at a glance.
-        layout.addWidget(QLabel("ms /"))
+        # 'per' connector between '500 ms' and the unit combo so the full
+        # rate reads naturally ('500 ms per day').
+        layout.addWidget(QLabel("per"))
 
         self.unit_combo = QComboBox()
         self.unit_combo.addItems(list(PLAYBACK_UNITS))
@@ -111,17 +108,6 @@ class PlaybackBar(QWidget):
         self.unit_combo.setMinimumWidth(80)
         self.unit_combo.currentTextChanged.connect(self._emit_speed)
         layout.addWidget(self.unit_combo)
-
-        # Loop sits next to the speed controls (left-grouped with
-        # everything else) rather than pushed to the far right.
-        self.loop_cb = QCheckBox("Loop")
-        self.loop_cb.setChecked(False)
-        self.loop_cb.setToolTip(
-            "Wrap back to the first sample at the end of the time range. "
-            "Off: stop at the last frame."
-        )
-        self.loop_cb.toggled.connect(self.loop_toggled)
-        layout.addWidget(self.loop_cb)
 
         layout.addStretch(1)
 
@@ -424,7 +410,6 @@ class TimelineStrip(QWidget):
     # to connect to the strip for every multi-pane time interaction.
     play_toggled = Signal(bool)
     speed_changed = Signal(int, str)
-    loop_toggled = Signal(bool)
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
@@ -440,7 +425,6 @@ class TimelineStrip(QWidget):
         self.playback_bar = PlaybackBar(self)
         self.playback_bar.play_toggled.connect(self.play_toggled)
         self.playback_bar.speed_changed.connect(self.speed_changed)
-        self.playback_bar.loop_toggled.connect(self.loop_toggled)
         self._layout.addWidget(self.playback_bar)
         self.setVisible(False)
 
