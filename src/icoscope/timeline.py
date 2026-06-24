@@ -21,15 +21,15 @@ from collections.abc import Sequence
 
 from qtpy.QtCore import Qt, Signal
 from qtpy.QtGui import QColor, QFontMetrics, QPainter, QPen
-from qtpy.QtWidgets import QSizePolicy, QVBoxLayout, QWidget
+from qtpy.QtWidgets import QPushButton, QSizePolicy, QVBoxLayout, QWidget
 
 # Track height and total-strip height tuned to land under the viewports
 # without dominating the layout. Update both together if the row height
 # grows; the strip's setFixedHeight uses N × TRACK_HEIGHT + padding.
 TRACK_HEIGHT = 28
 # Track region widths, left to right:
-#   [lock] [label] [plot area with dots + cursor] [value text]
-LOCK_WIDTH = 22       # toggle area on the very left
+#   [lock button] [label] [plot area with dots + cursor] [value text]
+LOCK_WIDTH = 32       # toggle button on the very left
 LABEL_WIDTH = 96      # field-name label (clickable → select pane)
 VALUE_WIDTH = 96      # right-hand current-pick value
 HORIZONTAL_PADDING = 12
@@ -83,6 +83,24 @@ class Track(QWidget):
         self.setFixedHeight(TRACK_HEIGHT)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.setMouseTracking(False)
+        # Lock as a real QPushButton — gives it a visible frame so the
+        # click affordance is clear, and Qt renders the emoji at a
+        # readable button-sized scale (the previous painted glyph at
+        # 22px was hard to read). Checkable so the visual state of the
+        # button tracks the lock state without us needing a stylesheet.
+        self._lock_btn = QPushButton("🔓", self)
+        self._lock_btn.setCheckable(True)
+        self._lock_btn.setFixedSize(LOCK_WIDTH - 4, TRACK_HEIGHT - 6)
+        self._lock_btn.move(2, 3)
+        self._lock_btn.setToolTip(
+            "Lock this pane to its current time — the master cursor will "
+            "skip it on subsequent scrubs."
+        )
+        # Don't toggle state on press — the window decides whether to
+        # honour the toggle (and pushes the new state back via
+        # set_locked). Block the default toggle so visual state is
+        # always authoritatively set by set_locked.
+        self._lock_btn.clicked.connect(self._on_lock_button_clicked)
 
     def set_samples(self, times: Sequence) -> None:
         """Replace the dot positions for this track."""
@@ -111,9 +129,25 @@ class Track(QWidget):
         self.update()
 
     def set_locked(self, locked: bool) -> None:
-        """Toggle the lock visual + state (caller decides the semantics)."""
+        """Set the lock visual + state (caller decides the semantics)."""
         self._locked = bool(locked)
+        self._lock_btn.blockSignals(True)
+        self._lock_btn.setChecked(self._locked)
+        self._lock_btn.setText("🔒" if self._locked else "🔓")
+        self._lock_btn.blockSignals(False)
         self.update()
+
+    def _on_lock_button_clicked(self) -> None:
+        """Fire ``lock_clicked`` and revert the button's auto-toggle.
+
+        The window is the only authority on the visual state — it
+        decides whether to honour the toggle and pushes the new state
+        back via :meth:`set_locked`.
+        """
+        self._lock_btn.blockSignals(True)
+        self._lock_btn.setChecked(self._locked)
+        self._lock_btn.blockSignals(False)
+        self.lock_clicked.emit()
 
     @property
     def locked(self) -> bool:
@@ -151,18 +185,14 @@ class Track(QWidget):
         return self._plot_x0() + ratio * self._plot_w()
 
     def paintEvent(self, _event) -> None:
-        """Custom paint: lock, label, baseline, sample dots, cursor, value."""
+        """Custom paint: label, baseline, sample dots, cursor, value.
+
+        The lock control is a real QPushButton child widget (positioned
+        in ``__init__``), not painted here.
+        """
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         fm = QFontMetrics(p.font())
-
-        # Lock icon — unicode padlock at the left. Filled colour when
-        # locked, dim outline-only when unlocked. Renders as a glyph so we
-        # don't ship a custom icon asset.
-        p.setPen(QColor("#d4a060") if self._locked else QColor("#444444"))
-        p.drawText(0, 0, LOCK_WIDTH, self.height(),
-                   Qt.AlignVCenter | Qt.AlignCenter,
-                   "🔒" if self._locked else "🔓")
 
         # Label, vertically centred and elided to fit. Slightly brighter when
         # the pane is unlocked to telegraph that the label is clickable.
@@ -206,12 +236,16 @@ class Track(QWidget):
                        Qt.AlignVCenter | Qt.AlignRight, elided)
 
     def mousePressEvent(self, event) -> None:
-        """Route the click to the right region: lock / label / plot."""
+        """Route the click to the right region: label / plot.
+
+        Lock clicks come from the QPushButton's own ``clicked`` signal
+        (Qt swallows mouse events on child widgets before they reach the
+        parent), so we only handle label + plot here.
+        """
         x = event.position().x() if hasattr(event, "position") else event.x()
-        if x < LOCK_WIDTH:
-            self.lock_clicked.emit()
-            return
         if x < LOCK_WIDTH + LABEL_WIDTH:
+            # Anywhere left of the plot baseline that isn't the lock
+            # button is the label area — select this pane.
             self.label_clicked.emit()
             return
         plot_w = self._plot_w()
