@@ -1854,13 +1854,20 @@ class MainWindow(QMainWindow):
         )
 
     def _resolve_pane_to_cursor(self, pane_idx: int) -> int:
-        """Return the time index that puts ``pane_idx`` closest to the cursor.
+        """Return the time index that surfaces ``pane_idx``'s data for the cursor.
+
+        Uses :func:`last_previous_time_index` — the physically-correct
+        resolution for climate data (a sample stamped ``t`` represents
+        the period preceding ``t``, so a cursor on April 15 should show
+        March's monthly mean, not April's). See ``time_axis.py`` for the
+        full reasoning; future settings work may expose a "nearest"
+        alternative for visualisation use cases.
 
         Falls back to 0 when there's no cursor yet, the pane's field has
         no time axis, or the axis can't be parsed. Caller is responsible
         for writing the result back to ``pane.time_index``.
         """
-        from .time_axis import nearest_time_index
+        from .time_axis import last_previous_time_index
         cursor = self._file_state.time_cursor
         if cursor is None:
             return 0
@@ -1869,7 +1876,7 @@ class MainWindow(QMainWindow):
         times = self._times_for(meta) if meta else None
         if times is None or len(times) == 0:
             return 0
-        return nearest_time_index(cursor, times)
+        return last_previous_time_index(cursor, times)
 
     def _sync_cursor_from_pane(self, anchor_idx: int) -> None:
         """Take the anchor pane's time_index, store as master cursor, propagate.
@@ -1895,13 +1902,16 @@ class MainWindow(QMainWindow):
         Shared entry point used both by side-panel slider scrubs (via
         :meth:`_sync_cursor_from_pane`) and by direct drags on the bottom
         timeline strip. Each visible pane's ``time_index`` shifts to the
-        nearest sample on its own axis, **unless that pane has
-        ``time_locked=True``** (the user pinned it to a fixed time via the
-        timeline-strip lock). The active pane's side-panel slider follows
-        along (signals blocked so we don't re-enter), and the timeline
-        strip's cursor marker + per-pane value column are updated.
+        latest sample at or before the cursor on its own axis (the
+        physically-correct resolution for climate data — see
+        :func:`last_previous_time_index`), **unless that pane has
+        ``time_locked=True``** (the user pinned it to a fixed time via
+        the timeline-strip lock). The active pane's side-panel slider
+        follows along (signals blocked so we don't re-enter), and the
+        timeline strip's cursor marker + per-pane value column are
+        updated.
         """
-        from .time_axis import nearest_time_index
+        from .time_axis import last_previous_time_index
         self._file_state.time_cursor = cursor
         for i in range(self._pane_container.n_visible):
             pane = self.state.panes[i]
@@ -1909,7 +1919,7 @@ class MainWindow(QMainWindow):
                 meta = self._file_state.file_fields.get(pane.color_by)
                 times = self._times_for(meta) if meta else None
                 if times is not None and len(times) > 0:
-                    new_idx = nearest_time_index(cursor, times)
+                    new_idx = last_previous_time_index(cursor, times)
                     if new_idx != pane.time_index:
                         pane.time_index = new_idx
             self._refresh_scalars(i)
@@ -2006,7 +2016,13 @@ class MainWindow(QMainWindow):
             pane = self.state.panes[i]
             meta = self._file_state.file_fields.get(pane.color_by)
             times = self._times_for(meta) if meta else None
-            label = pane.color_by if pane.color_by != "None" else f"Pane {i + 1}"
+            # Prefix the track label with the 1-indexed pane number so the
+            # strip is self-describing — track ordering matches viewport
+            # ordering (Pane 1 top) but the explicit number eliminates
+            # ambiguity when fields have similar names or when looking at
+            # the strip without the viewports in view.
+            label = (f"Pane {i + 1}: {pane.color_by}"
+                     if pane.color_by != "None" else f"Pane {i + 1}")
             if times is not None and len(times) > 0:
                 any_time_varying = True
                 tracks.append((label, list(times)))
