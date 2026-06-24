@@ -16,6 +16,7 @@ from qtpy.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QSplitter,
+    QVBoxLayout,
     QWidget,
 )
 
@@ -31,6 +32,7 @@ from .picker import Picker
 from .playback import Playback
 from .tabs import Tab
 from .themes import CMAPS, THEMES
+from .timeline import TimelineStrip
 
 
 @dataclass
@@ -237,9 +239,20 @@ class MainWindow(QMainWindow):
         # that holds up to 4 panes. Stage 2 always shows exactly one pane
         # (pane 0) so single-pane behaviour is unchanged. Stage 3 adds the
         # View menu to switch between 1 / 1×2 / 2×2 layouts.
-        self._pane_container = PaneContainer(self.splitter)
+        # PaneContainer + TimelineStrip sit in a vertical container so the
+        # strip docks under the viewports. The container goes into the main
+        # horizontal splitter (where PaneContainer used to live directly).
+        viewport_area = QWidget(self.splitter)
+        va_layout = QVBoxLayout(viewport_area)
+        va_layout.setContentsMargins(0, 0, 0, 0)
+        va_layout.setSpacing(0)
+        self._pane_container = PaneContainer(viewport_area)
         self._pane_container.pane_clicked.connect(self._on_pane_clicked)
-        self.splitter.addWidget(self._pane_container)
+        va_layout.addWidget(self._pane_container, stretch=1)
+        self._timeline_strip = TimelineStrip(viewport_area)
+        self._timeline_strip.cursor_changed.connect(self._on_timeline_cursor_changed)
+        va_layout.addWidget(self._timeline_strip)
+        self.splitter.addWidget(viewport_area)
         self.plotter = self._pane_container.pane(0).plotter
         # Install VTK ModifiedEvent observers on every pane's camera so we
         # can mirror movements across visible panes in sync mode. Done once
@@ -1082,6 +1095,8 @@ class MainWindow(QMainWindow):
             self._refresh_scalars(idx)
             self._update_scalars_only(idx)
             self._update_pane_banner(idx)
+        # Rebuild the timeline strip — track count follows visible-pane count.
+        self._refresh_timeline_strip()
         # Hide banners on panes that just became hidden so their stale
         # state doesn't pop back up next time the user widens the layout.
         for idx in range(n_panes, self._pane_container.MAX_PANES):
@@ -1254,6 +1269,10 @@ class MainWindow(QMainWindow):
         # meaningful, the user just needs to re-pick to update the value).
         if hasattr(self, "value_label"):
             self._clear_cell_value()
+        # The active pane's field changed → its track on the strip needs to
+        # show the new sample dots (and the strip may need to appear/hide
+        # if the new field is/isn't time-varying).
+        self._refresh_timeline_strip()
         self._build_scene()
 
     def _on_colorbar(self, on):
@@ -1599,6 +1618,7 @@ class MainWindow(QMainWindow):
         # Hide any stale banners — the file they referenced is gone.
         for i in range(self._pane_container.MAX_PANES):
             self._pane_container.pane(i).set_banner(None)
+        self._refresh_timeline_strip()
         # File tab's Color by only ever lists file fields, never synthetic
         # options — on unload, just "None" remains.
         self.panel.file_tab.set_color_by_items(["None"])
@@ -1688,6 +1708,7 @@ class MainWindow(QMainWindow):
         self.panel.file_tab.display.cbar_btn.setEnabled(enable)
         self.panel.file_tab.display.cmap_box.setEnabled(enable)
         self._apply_mesh_change()
+        self._refresh_timeline_strip()
 
     def _on_tab_changed(self, idx: int):
         """Tab is the active mesh source — swap the rendered scene accordingly."""
@@ -1736,6 +1757,9 @@ class MainWindow(QMainWindow):
             self.playback.start_spin()
         else:
             self.playback.stop_spin()
+        # Strip is only meaningful on the File tab — hide on Ico/LonLat,
+        # rebuild when re-entering File.
+        self._refresh_timeline_strip()
         self._update_status()
 
     def _render_empty_sphere(self):
@@ -1841,7 +1865,6 @@ class MainWindow(QMainWindow):
         axis via :func:`nearest_time_index` and refreshes if its index
         changed. Anchor pane always refreshes (its index already changed).
         """
-        from .time_axis import nearest_time_index
         anchor_pane = self.state.panes[anchor_idx]
         anchor_meta = self._file_state.file_fields.get(anchor_pane.color_by)
         anchor_times = self._times_for(anchor_meta) if anchor_meta else None
@@ -1849,11 +1872,23 @@ class MainWindow(QMainWindow):
                   if anchor_times is not None
                   and anchor_pane.time_index < len(anchor_times)
                   else None)
-        self._file_state.time_cursor = cursor
+        self._set_master_cursor(cursor)
 
+    def _set_master_cursor(self, cursor) -> None:
+        """Propagate a cursor datetime to every visible pane.
+
+        Shared entry point used both by side-panel slider scrubs (via
+        :meth:`_sync_cursor_from_pane`) and by direct drags on the bottom
+        timeline strip. Each visible pane's ``time_index`` shifts to the
+        nearest sample on its own axis. The active pane's side-panel
+        slider follows along (signals blocked so we don't re-enter), and
+        the timeline strip's cursor marker is updated.
+        """
+        from .time_axis import nearest_time_index
+        self._file_state.time_cursor = cursor
         for i in range(self._pane_container.n_visible):
             pane = self.state.panes[i]
-            if i != anchor_idx and cursor is not None:
+            if cursor is not None:
                 meta = self._file_state.file_fields.get(pane.color_by)
                 times = self._times_for(meta) if meta else None
                 if times is not None and len(times) > 0:
@@ -1863,6 +1898,51 @@ class MainWindow(QMainWindow):
             self._refresh_scalars(i)
             self._update_scalars_only(i)
             self._update_pane_banner(i)
+        # Sync the side-panel slider for the active pane (without firing
+        # its valueChanged → _on_time_changed → re-entry into this method).
+        active = self._active_pane_idx
+        if active < self._pane_container.n_visible:
+            slider = self.panel.file_tab.display_pane.time_slider
+            slider.blockSignals(True)
+            slider.setValue(self.state.panes[active].time_index)
+            slider.blockSignals(False)
+            self.panel.file_tab.set_time_label(slider.value())
+        self._timeline_strip.set_cursor(cursor)
+
+    def _on_timeline_cursor_changed(self, cursor) -> None:
+        """User dragged the timeline strip — set the master cursor + render."""
+        self._set_master_cursor(cursor)
+        self._build_scene()
+
+    def _refresh_timeline_strip(self) -> None:
+        """Rebuild the bottom timeline from the current visible-pane state.
+
+        Show the strip only on the File tab, only when at least one visible
+        pane displays a time-varying field. One track per visible pane,
+        labelled with the pane's color_by; samples are the parsed datetimes
+        from that field's time axis.
+        """
+        on_file_tab = self.panel.tabs.currentIndex() == Tab.FILE
+        if not on_file_tab or self._mesh is None:
+            self._timeline_strip.set_panes([])
+            return
+        tracks = []
+        any_time_varying = False
+        for i in range(self._pane_container.n_visible):
+            pane = self.state.panes[i]
+            meta = self._file_state.file_fields.get(pane.color_by)
+            times = self._times_for(meta) if meta else None
+            label = pane.color_by if pane.color_by != "None" else f"Pane {i + 1}"
+            if times is not None and len(times) > 0:
+                any_time_varying = True
+                tracks.append((label, list(times)))
+            else:
+                tracks.append((label, []))
+        if not any_time_varying:
+            self._timeline_strip.set_panes([])
+            return
+        self._timeline_strip.set_panes(tracks)
+        self._timeline_strip.set_cursor(self._file_state.time_cursor)
 
     def _on_level_changed(self, idx):
         if idx == self.pane_state.level_index:
