@@ -94,6 +94,17 @@ class _TabState:
     # time dims (daily + monthly) stay aligned. ``None`` while no
     # time-varying field is on screen (also for the Ico/LonLat tabs).
     time_cursor: object = None
+    # Field-keyed colour-limit cache (file tab only). Filled lazily on
+    # first need by ``_compute_field_clim``; cleared on file unload. With
+    # ``MainWindow.clim_shared`` on (default), every pane displaying the
+    # same field reads the same (min, max) here so cross-pane comparison
+    # is meaningful (same colour = same physical value).
+    clim_cache: dict = field(default_factory=dict)
+    # Field-keyed "symmetric around 0" flag. In shared mode this is the
+    # source of truth; toggling it on any pane propagates to every pane
+    # showing the same field. In per-pane mode (``clim_shared=False``)
+    # it's ignored and ``PaneState.center_zero`` is used directly.
+    clim_symmetric: dict = field(default_factory=dict)
     # Playback speed in *simulated time per real time* — see
     # ``timeline.PlaybackBar`` for the rationale (multi-axis files need
     # a physical-time-anchored pace so a monthly pane and a daily pane
@@ -197,6 +208,13 @@ class MainWindow(QMainWindow):
         # see _their_ cameras change and would loop without it.
         self._camera_sync_on: bool = True
         self._syncing_cameras: bool = False
+        # Shared colour range across all visible panes that display the
+        # same field — keeps colour ↔ value mapping consistent for
+        # cross-pane / cross-time / cross-level comparison. Tradeoff:
+        # narrow sub-ranges (e.g. stratospheric temp on a global temp
+        # clim) lose contrast. View → Share colour range across panes
+        # toggles this; off → per-pane auto-clim (PyVista per-frame).
+        self._clim_shared: bool = True
         # Last successful pick: (cell_idx, lon, lat) or None. Used to refresh
         # the status-bar value display after time/level slider scrubs without
         # forcing the user to re-pick.
@@ -294,6 +312,8 @@ class MainWindow(QMainWindow):
             self, self.theme_name, self._on_theme,
             on_pane_layout=self._on_pane_layout,
             on_reset_cameras=self._on_reset_cameras,
+            on_clim_shared=self._on_clim_shared_toggled,
+            clim_shared_default=self._clim_shared,
         )
         self._build_lonlat_widget()
         self.statusBar().showMessage("ready")
@@ -551,15 +571,108 @@ class MainWindow(QMainWindow):
             self._mesh.cell_data[key] = np.asarray(arr)
 
     def _clim(self, pane_idx: int | None = None):
-        """Colour-limit range for a pane's scalar array (or None for auto)."""
+        """Colour-limit range for a pane's scalar array (or None for auto).
+
+        Three modes:
+
+        - Shared mode + file field — returns the field's cached global
+          range so every pane showing the same field uses the same
+          colour ↔ value mapping (cross-pane / cross-time / cross-level
+          comparison works). Cache is filled lazily on first access via
+          :meth:`_compute_field_clim`.
+        - Shared mode + symmetric — returns ``(-M, +M)`` where ``M`` is
+          ``max(abs(min), abs(max))`` of the cached range. Same
+          colour = same value, just centred on 0.
+        - Per-pane mode (``clim_shared=False``) or symmetric on a
+          non-file field — falls back to the per-pane scalar array.
+          ``None`` lets PyVista auto-scale per frame (this was the
+          pre-PR default for non-symmetric panes; the cross-pane
+          comparison failures it caused are why shared mode is the
+          new default).
+        """
         idx = self._active_pane_idx if pane_idx is None else pane_idx
         arr = self._pane_scalars[idx]
         pane = self.state.panes[idx]
+        field = pane.color_by
+        file_fields = self._file_state.file_fields
+        is_file_field = field in file_fields and self.file_path is not None
+
+        if self._clim_shared and is_file_field:
+            symmetric = self._file_state.clim_symmetric.get(
+                field, pane.center_zero)
+            lo_hi = self._cached_field_clim(field)
+            if lo_hi is None:
+                return None
+            lo, hi = lo_hi
+            if symmetric:
+                a = max(abs(lo), abs(hi))
+                return [-a, a] if a > 0 else None
+            return [lo, hi]
+
+        # Per-pane fallback: original behaviour. Auto-scale unless
+        # symmetric is on, in which case derive from this pane's array.
         if arr is None or not pane.center_zero:
             return None
         s = np.asarray(arr)
         a = float(np.nanmax(np.abs(s)))
         return [-a, a] if a > 0 else None
+
+    def _cached_field_clim(self, field: str) -> tuple[float, float] | None:
+        """Return the cached ``(min, max)`` for ``field``; compute on miss."""
+        cache = self._file_state.clim_cache
+        if field in cache:
+            return cache[field]
+        lo_hi = self._compute_field_clim(field)
+        if lo_hi is not None:
+            cache[field] = lo_hi
+        return lo_hi
+
+    def _compute_field_clim(self, field: str) -> tuple[float, float] | None:
+        """Stream the field in time-step chunks; return its global ``(min, max)``.
+
+        Reads one timestep at a time (each ICOLMDZ slab is ~20 MB) and
+        accumulates a running min/max. Total cost: ~1–2 s on SSD for a
+        full daily-output `temp` (~570 MB). Status-bar message keeps
+        the user informed during the wait. Cache stores result in
+        ``_file_state.clim_cache`` so subsequent accesses are O(1).
+        """
+        meta = self._file_state.file_fields.get(field)
+        if not meta or self.file_path is None:
+            return None
+        from .loader import read_field
+        ctx = self._file_cache.get("context") if self._file_cache else None
+        self.statusBar().showMessage(
+            f"Computing colour range for {field}…", 0)
+        QApplication.processEvents()
+        try:
+            n_time = meta["shape"][0] if meta.get("time_varying") else 1
+            n_levels = meta.get("n_levels", 0)
+            lo, hi = float("inf"), float("-inf")
+            for t in range(n_time):
+                if n_levels > 1:
+                    for lev in range(n_levels):
+                        arr = read_field(self.file_path, field,
+                                         time_index=t, level_index=lev,
+                                         context=ctx)
+                        if arr is None or arr.size == 0:
+                            continue
+                        a = np.asarray(arr)
+                        lo = min(lo, float(np.nanmin(a)))
+                        hi = max(hi, float(np.nanmax(a)))
+                else:
+                    arr = read_field(self.file_path, field,
+                                     time_index=t if meta.get("time_varying") else None,
+                                     context=ctx)
+                    if arr is None or arr.size == 0:
+                        continue
+                    a = np.asarray(arr)
+                    lo = min(lo, float(np.nanmin(a)))
+                    hi = max(hi, float(np.nanmax(a)))
+        finally:
+            self.statusBar().clearMessage()
+        if not np.isfinite(lo) or not np.isfinite(hi):
+            return None
+        return (lo, hi)
 
     # ── rendering ─────────────────────────────────
     def _build_scene(self):
@@ -1040,8 +1153,15 @@ class MainWindow(QMainWindow):
         ft.set_color_by(pane.color_by)
         ft.set_cmap(pane.cmap)
         block = ft.display_pane
+        # In shared mode the symmetric flag is field-shared, not per-pane:
+        # read from the shared dict so switching to a pane displaying an
+        # already-symmetric field shows the box checked.
+        if self._clim_shared and pane.color_by in self._file_state.clim_symmetric:
+            shown_symmetric = self._file_state.clim_symmetric[pane.color_by]
+        else:
+            shown_symmetric = pane.center_zero
         block.center_cb.blockSignals(True)
-        block.center_cb.setChecked(pane.center_zero)
+        block.center_cb.setChecked(shown_symmetric)
         block.center_cb.blockSignals(False)
         block.bar_cb.blockSignals(True)
         block.bar_cb.setChecked(pane.colorbar_on)
@@ -1308,6 +1428,35 @@ class MainWindow(QMainWindow):
 
     def _on_center_zero(self, on):
         self.pane_state.center_zero = on
+        # In shared mode the toggle is field-shared: propagate to every
+        # pane displaying the same field so cross-pane colourbars stay
+        # consistent. Also seed/update the file-state entry that `_clim`
+        # reads from in shared mode.
+        if self._clim_shared:
+            field = self.pane_state.color_by
+            if field and field != "None":
+                self._file_state.clim_symmetric[field] = on
+                for i in range(self._pane_container.n_visible):
+                    if self.state.panes[i].color_by == field:
+                        self.state.panes[i].center_zero = on
+        self._build_scene()
+
+    def _on_clim_shared_toggled(self, on: bool) -> None:
+        """User flipped View → Share colour range across panes."""
+        self._clim_shared = on
+        if on:
+            # Snapshot the current per-pane center_zero state into the
+            # field-shared dict — active pane wins on conflicts, then
+            # other panes converge on subsequent refreshes.
+            for i in range(self._pane_container.n_visible):
+                pane = self.state.panes[i]
+                if pane.color_by and pane.color_by != "None":
+                    self._file_state.clim_symmetric.setdefault(
+                        pane.color_by, pane.center_zero)
+            # Active pane wins outright.
+            ap = self.state.panes[self._active_pane_idx]
+            if ap.color_by and ap.color_by != "None":
+                self._file_state.clim_symmetric[ap.color_by] = ap.center_zero
         self._build_scene()
 
     def _on_edge_color(self, hex_str):
@@ -1645,6 +1794,12 @@ class MainWindow(QMainWindow):
         self._file_state.file_fields = {}
         self._file_state.file_levels = None
         self._file_state.time_cursor = None
+        # Clim cache holds per-field min/max keyed against this file's
+        # variables; useless once the file is gone, and would silently
+        # serve wrong values if a different file with same field names
+        # is loaded next.
+        self._file_state.clim_cache = {}
+        self._file_state.clim_symmetric = {}
         self._file_cache = None
         # Hide any stale banners — the file they referenced is gone.
         for i in range(self._pane_container.MAX_PANES):
