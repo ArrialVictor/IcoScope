@@ -1456,8 +1456,11 @@ class MainWindow(QMainWindow):
             # Resolve the master cursor against the new field's axis so a
             # pane swap to a different time dim (e.g. monthly → daily) lands
             # on the closest equivalent sample instead of resetting to 0.
-            self.pane_state.time_index = self._resolve_pane_to_cursor(
-                self._active_pane_idx)
+            # Locked panes keep their pinned index — the lock contract says
+            # the pane stays at its frozen datetime regardless of master.
+            if not self.pane_state.time_locked:
+                self.pane_state.time_index = self._resolve_pane_to_cursor(
+                    self._active_pane_idx)
             self._update_pane_banner(self._active_pane_idx)
             n_levels = meta.get("n_levels", 0) if meta else 0
             if n_levels > 1 and self._file_state.file_levels is not None:
@@ -1519,8 +1522,10 @@ class MainWindow(QMainWindow):
         if on:
             # Snapshot: any field not in the dict gets seeded from a
             # pane currently showing it; active pane wins outright.
-            for i in range(self._pane_container.n_visible):
-                pane = self.state.panes[i]
+            # Iterate ALL panes (not just visible) so a hidden pane's
+            # stale center_zero can't later overwrite a visible pane's
+            # intent when the user expands the layout back out.
+            for pane in self.state.panes:
                 if pane.color_by and pane.color_by != "None":
                     self._file_state.clim_symmetric.setdefault(
                         pane.color_by, pane.center_zero)
@@ -1528,12 +1533,10 @@ class MainWindow(QMainWindow):
             if ap.color_by and ap.color_by != "None":
                 self._file_state.clim_symmetric[ap.color_by] = ap.center_zero
         else:
-            # Carry the shared value back into each visible pane's
-            # per-pane state so the visual doesn't change at the moment
-            # the user flips the toggle — they'll see the same colourbar
-            # they had a second ago, just now governed by per-pane state.
-            for i in range(self._pane_container.n_visible):
-                pane = self.state.panes[i]
+            # Carry the shared value back into every pane's per-pane
+            # state — including hidden ones — so re-expanding the layout
+            # after the toggle doesn't surface a stale per-pane value.
+            for pane in self.state.panes:
                 if pane.color_by in self._file_state.clim_symmetric:
                     pane.center_zero = \
                         self._file_state.clim_symmetric[pane.color_by]
@@ -2107,6 +2110,9 @@ class MainWindow(QMainWindow):
         if is_in_range(cursor, times):
             pane_widget.set_banner(None)
             return
+        if not (0 <= pane.time_index < len(times)):
+            pane_widget.set_banner(None)
+            return
         from .formatters import short_datetime
         nearest = times[pane.time_index]
         pane_widget.set_banner(
@@ -2153,7 +2159,7 @@ class MainWindow(QMainWindow):
         anchor_times = self._times_for(anchor_meta) if anchor_meta else None
         cursor = (anchor_times[anchor_pane.time_index]
                   if anchor_times is not None
-                  and anchor_pane.time_index < len(anchor_times)
+                  and 0 <= anchor_pane.time_index < len(anchor_times)
                   else None)
         self._set_master_cursor(cursor)
 
@@ -2210,10 +2216,11 @@ class MainWindow(QMainWindow):
         self._timeline_strip.set_pane_locked(pane_idx, pane.time_locked)
         if was_locked:
             # Just unlocked — the pane is now following the master cursor
-            # again. Re-propagate so its time_index + scalars + render
-            # catch up to wherever the cursor moved while it was locked.
+            # again. Re-propagate so its time_index + scalars catch up to
+            # wherever the cursor moved while it was locked, then render
+            # via the scrub path (no add_mesh churn — geometry is unchanged).
             self._set_master_cursor(self._file_state.time_cursor)
-            self._build_scene()
+            self._render_visible_panes()
         else:
             # Just locked — pane stops following; only the per-track
             # cursor visual needs updating (data stays where it was).
@@ -2317,7 +2324,7 @@ class MainWindow(QMainWindow):
             if pane.time_locked:
                 meta = self._file_state.file_fields.get(pane.color_by)
                 times = self._times_for(meta) if meta else None
-                if times is not None and pane.time_index < len(times):
+                if times is not None and 0 <= pane.time_index < len(times):
                     cursors.append(times[pane.time_index])
                 else:
                     cursors.append(None)

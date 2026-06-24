@@ -437,6 +437,8 @@ class TimelineStrip(QWidget):
         skip it in the domain calculation but still draw its label.
         """
         if not panes:
+            self._domain_t0 = None
+            self._domain_t1 = None
             self.setVisible(False)
             return
 
