@@ -81,6 +81,12 @@ class _TabState:
     file_fields: dict = field(default_factory=dict)
     # presnivs (Pa) for the loaded file, or None if no vertical dim
     file_levels: object = None
+    # Master datetime cursor shared across panes. When a slider scrub
+    # happens in any pane it sets this; every other pane resolves the
+    # cursor to its own time axis's nearest sample so files with multiple
+    # time dims (daily + monthly) stay aligned. ``None`` while no
+    # time-varying field is on screen (also for the Ico/LonLat tabs).
+    time_cursor: object = None
     # Per-pane state. Default to a single pane; the File tab may grow this
     # list to 2 or 4 entries when the user picks a multi-pane layout.
     panes: list = field(default_factory=lambda: [PaneState()])
@@ -1070,6 +1076,11 @@ class MainWindow(QMainWindow):
         for idx in range(n_panes):
             self._refresh_scalars(idx)
             self._update_scalars_only(idx)
+            self._update_pane_banner(idx)
+        # Hide banners on panes that just became hidden so their stale
+        # state doesn't pop back up next time the user widens the layout.
+        for idx in range(n_panes, self._pane_container.MAX_PANES):
+            self._pane_container.pane(idx).set_banner(None)
         self._build_scene()
         # Reset the camera on panes that just became visible — without
         # this they use PyVista's pre-add-mesh default which can leave
@@ -1217,7 +1228,12 @@ class MainWindow(QMainWindow):
                 )
             else:
                 self.panel.file_tab.set_time_axis(0)
-            self.pane_state.time_index = 0
+            # Resolve the master cursor against the new field's axis so a
+            # pane swap to a different time dim (e.g. monthly → daily) lands
+            # on the closest equivalent sample instead of resetting to 0.
+            self.pane_state.time_index = self._resolve_pane_to_cursor(
+                self._active_pane_idx)
+            self._update_pane_banner(self._active_pane_idx)
             n_levels = meta.get("n_levels", 0) if meta else 0
             if n_levels > 1 and self._file_state.file_levels is not None:
                 self.panel.file_tab.set_levels(self._file_state.file_levels)
@@ -1573,7 +1589,11 @@ class MainWindow(QMainWindow):
         self.file_path = None
         self._file_state.file_fields = {}
         self._file_state.file_levels = None
+        self._file_state.time_cursor = None
         self._file_cache = None
+        # Hide any stale banners — the file they referenced is gone.
+        for i in range(self._pane_container.MAX_PANES):
+            self._pane_container.pane(i).set_banner(None)
         # File tab's Color by only ever lists file fields, never synthetic
         # options — on unload, just "None" remains.
         self.panel.file_tab.set_color_by_items(["None"])
@@ -1746,21 +1766,98 @@ class MainWindow(QMainWindow):
         self._update_status()
 
     def _on_time_changed(self, idx):
-        # Targets the selected pane (or pane 0 when no selection). Going
-        # through self.pane_state ensures multi-pane scrubs only affect
-        # the user's selected viewport.
+        # Targets the selected pane (or pane 0 when no selection). The
+        # scrub also sets the file-tab's master ``time_cursor`` so every
+        # other visible pane resolves the cursor to its own axis — files
+        # with multiple time dims (daily + monthly) stay aligned without
+        # the user having to scrub each pane's slider.
         if idx == self.pane_state.time_index:
             return
         self.pane_state.time_index = idx
         meta = self._file_state.file_fields.get(self.pane_state.color_by)
         if meta:
             self.panel.file_tab.set_time_label(idx)
-        self._refresh_scalars()
+        self._sync_cursor_from_pane(self._active_pane_idx)
         self._refresh_picked_value()
-        # Slider scrub — geometry is unchanged, so swap scalars in place
-        # (and skip the picker-locator invalidation; it's built from cells).
-        self._update_scalars_only()
         self._build_scene()
+
+    def _update_pane_banner(self, pane_idx: int) -> None:
+        """Show / hide the out-of-range banner on pane ``pane_idx``.
+
+        The banner appears when the master cursor falls outside the
+        pane's field's time-axis range; the pane is then clamped to its
+        first/last sample, and the banner makes that explicit instead of
+        silently showing stale-looking data. Cleared when in-range or
+        when no cursor / no time axis applies.
+        """
+        from .time_axis import is_in_range
+        pane_widget = self._pane_container.pane(pane_idx)
+        pane = self.state.panes[pane_idx]
+        cursor = self._file_state.time_cursor
+        meta = self._file_state.file_fields.get(pane.color_by)
+        times = self._times_for(meta) if meta else None
+        if cursor is None or times is None or len(times) == 0:
+            pane_widget.set_banner(None)
+            return
+        if is_in_range(cursor, times):
+            pane_widget.set_banner(None)
+            return
+        from .formatters import short_datetime
+        nearest = times[pane.time_index]
+        pane_widget.set_banner(
+            f"Showing {short_datetime(nearest)} "
+            f"(cursor at {short_datetime(cursor)})"
+        )
+
+    def _resolve_pane_to_cursor(self, pane_idx: int) -> int:
+        """Return the time index that puts ``pane_idx`` closest to the cursor.
+
+        Falls back to 0 when there's no cursor yet, the pane's field has
+        no time axis, or the axis can't be parsed. Caller is responsible
+        for writing the result back to ``pane.time_index``.
+        """
+        from .time_axis import nearest_time_index
+        cursor = self._file_state.time_cursor
+        if cursor is None:
+            return 0
+        pane = self.state.panes[pane_idx]
+        meta = self._file_state.file_fields.get(pane.color_by)
+        times = self._times_for(meta) if meta else None
+        if times is None or len(times) == 0:
+            return 0
+        return nearest_time_index(cursor, times)
+
+    def _sync_cursor_from_pane(self, anchor_idx: int) -> None:
+        """Take the anchor pane's time_index, store as master cursor, propagate.
+
+        The anchor pane is whichever pane just had its slider scrubbed —
+        its ``(color_by, time_index)`` defines the absolute datetime. Every
+        other visible pane resolves the cursor against its own field's
+        axis via :func:`nearest_time_index` and refreshes if its index
+        changed. Anchor pane always refreshes (its index already changed).
+        """
+        from .time_axis import nearest_time_index
+        anchor_pane = self.state.panes[anchor_idx]
+        anchor_meta = self._file_state.file_fields.get(anchor_pane.color_by)
+        anchor_times = self._times_for(anchor_meta) if anchor_meta else None
+        cursor = (anchor_times[anchor_pane.time_index]
+                  if anchor_times is not None
+                  and anchor_pane.time_index < len(anchor_times)
+                  else None)
+        self._file_state.time_cursor = cursor
+
+        for i in range(self._pane_container.n_visible):
+            pane = self.state.panes[i]
+            if i != anchor_idx and cursor is not None:
+                meta = self._file_state.file_fields.get(pane.color_by)
+                times = self._times_for(meta) if meta else None
+                if times is not None and len(times) > 0:
+                    new_idx = nearest_time_index(cursor, times)
+                    if new_idx != pane.time_index:
+                        pane.time_index = new_idx
+            self._refresh_scalars(i)
+            self._update_scalars_only(i)
+            self._update_pane_banner(i)
 
     def _on_level_changed(self, idx):
         if idx == self.pane_state.level_index:

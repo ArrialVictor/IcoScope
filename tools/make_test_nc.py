@@ -92,6 +92,21 @@ def main():
         vort[m] = (np.cos(2 * lat_rad)
                    * np.cos(3 * lon_rad + 4 * phase) * 1e-4)
 
+    # tas_daily: a daily-cadence temperature field on a DISTINCT time axis
+    # (``time_counter`` instead of ``time``). Lets the multi-pane cursor logic
+    # be exercised — daily vs monthly mismatch is the realistic ICOLMDZ-ISO
+    # scenario (histday vs histmth output files merged at runtime).
+    # The pattern is a longitudinal hot band that drifts eastward over the
+    # 60-day window so the moment-to-moment changes are unambiguous to the
+    # eye (an earlier flat-ish cosine version was almost invisible).
+    n_days = 60
+    daily = np.zeros((n_days, n_cells))
+    for d in range(n_days):
+        day_phase = 2 * np.pi * d / n_days
+        daily[d] = (290.0
+                    + 25.0 * np.cos(lat_rad)
+                    + 20.0 * np.sin(lon_rad - day_phase))
+
     # write NetCDF
     print(f"Writing {OUTPATH}…")
     with Dataset(OUTPATH, "w", format="NETCDF4") as nc:
@@ -103,6 +118,7 @@ def main():
         nc.createDimension("cell", n_cells)
         nc.createDimension("nvertex", NVERTEX)
         nc.createDimension("time", n_months)
+        nc.createDimension("time_counter", n_days)
 
         lon = nc.createVariable("lon", "f4", ("cell",))
         lon[:] = clon
@@ -125,6 +141,16 @@ def main():
         t.standard_name = "time"
         t.calendar = "noleap"
 
+        # Second, daily-cadence time axis — covers the first 60 days of 2020,
+        # so the monthly axis (one sample every 30 days for a year) only
+        # overlaps it for the first ~two samples. Out-of-cursor-range banner
+        # exercise lives here.
+        tc = nc.createVariable("time_counter", "f4", ("time_counter",))
+        tc[:] = np.arange(n_days, dtype="f4")
+        tc.units = "days since 2020-01-01"
+        tc.standard_name = "time"
+        tc.calendar = "noleap"
+
         def add_field(name, data, units, long_name, standard_name=None, dims=("cell",)):
             v = nc.createVariable(name, "f4", dims)
             v[:] = data
@@ -142,12 +168,16 @@ def main():
         add_field("vort_t", vort, "s-1", "Mid-tropospheric vorticity (monthly)",
                   standard_name="atmosphere_relative_vorticity",
                   dims=("time", "cell"))
+        add_field("tas_daily", daily, "K",
+                  "Near-surface air temperature (daily)",
+                  dims=("time_counter", "cell"))
 
     print(f"  wrote {OUTPATH}")
     print("  fields: tas (sequential), tas_anomaly (diverging), "
           "precip (log-distributed),")
     print("          tas_t (seasonal cycle, hemispheric flip), "
-          "vort_t (rotating wave)")
+          "vort_t (rotating wave),")
+    print("          tas_daily (daily cadence on time_counter axis)")
 
 
 if __name__ == "__main__":

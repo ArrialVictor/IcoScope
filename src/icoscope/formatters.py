@@ -27,6 +27,21 @@ _DEGREE_REPLACEMENTS = {
 _DIMENSIONLESS = {"", "-", "1"}
 
 
+def short_datetime(d) -> str:
+    """Format a cftime / datetime / datetime64 as ``YYYY-MM-DD``.
+
+    Used for the per-pane out-of-range banner and other status surfaces
+    where the date is the load-bearing detail and time-of-day would
+    just add visual noise.
+    """
+    try:
+        return d.strftime("%Y-%m-%d")
+    except (AttributeError, TypeError):
+        # numpy.datetime64 / pandas Timestamp don't have strftime in all
+        # versions — fall back to a stringified form sliced to date only.
+        return str(d)[:10]
+
+
 def pretty_units(s: str) -> str:
     """Render CF-style unit strings with unicode superscripts and middle dots.
 

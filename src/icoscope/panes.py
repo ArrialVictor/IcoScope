@@ -50,12 +50,52 @@ class Pane(QFrame):
         # filter so we also see those clicks (without consuming them — VTK
         # still gets the event so the camera gesture works as before).
         self.plotter.interactor.installEventFilter(self)
+        # Banner text actor — surfaces "Showing <nearest> (cursor at <cursor>)"
+        # when the master time cursor falls outside this pane's field's axis
+        # range. Drawn as a VTK 2D text actor (rendered inside the scene), not
+        # a Qt QLabel: QLabels parented to QtInteractor don't reliably
+        # composite over the native VTK render on macOS. ``None`` means no
+        # banner is currently shown.
+        self._banner_text: str | None = None
 
     def set_selected(self, selected: bool) -> None:
         """Toggle the selection border."""
         self.setStyleSheet(
             self._STYLE_SELECTED if selected else self._STYLE_UNSELECTED
         )
+
+    def set_banner(self, text: str | None) -> None:
+        """Show ``text`` in the bottom-left overlay, or hide the banner.
+
+        Implemented as a VTK 2D text actor (``plotter.add_text`` /
+        ``remove_actor``) so it reliably composites over the rendered
+        sphere on every platform. Idempotent: re-passing the same text
+        is a no-op (avoids actor-churn flicker during fast scrubs).
+        """
+        if text == self._banner_text:
+            return
+        self.plotter.remove_actor("banner", reset_camera=False, render=False)
+        self._banner_text = text
+        if text:
+            # Top-left, just inside the pane. PyVista's ``position`` accepts
+            # either a named slot ("upper_left", etc.) or pixel coords; named
+            # slot keeps the banner anchored if the pane resizes.
+            self.plotter.add_text(
+                text, name="banner", position="upper_left",
+                font_size=10, color="white",
+                shadow=True,
+            )
+        self.plotter.render()
+
+    @property
+    def banner_visible(self) -> bool:
+        """Whether a banner is currently displayed (for tests)."""
+        return self._banner_text is not None
+
+    @property
+    def banner_text(self) -> str:
+        """Current banner text (empty string when hidden), for tests."""
+        return self._banner_text or ""
 
     def mousePressEvent(self, ev):
         """Forward the click to the parent then announce who was clicked."""
