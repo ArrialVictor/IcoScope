@@ -612,6 +612,13 @@ class MainWindow(QMainWindow):
             edge_color=self._edge_color(),
             line_width=st.edge_width,
             smooth_shading=False,
+            # Disable per-camera lighting so the displayed colour is the
+            # colormap value, period — not modulated by the head light's
+            # angle to the surface. Without this, two panes with cameras
+            # at slightly different positions render the same data at
+            # noticeably different brightness, which is misleading for
+            # scientific viz where the colourmap is the message.
+            lighting=False,
             show_scalar_bar=pane.colorbar_on and has_scalars,
             scalar_bar_args=({"color": self._cbar_color(pane_idx),
                               "title_font_size": 12,

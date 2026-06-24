@@ -448,6 +448,13 @@ class _DisplayBlock(QWidget):
         Combined / global blocks always have something in the group
         (auto-rotate, sync_cameras, etc.) so the hide only triggers
         for the File-tab pane block.
+
+        Uses ``isHidden()`` rather than ``isVisible()`` for the row
+        checks — the latter returns False whenever any ancestor is
+        hidden, which creates a chicken-and-egg with the group itself
+        (the group is hidden → child row's ``isVisible()`` is False →
+        ``has_content`` is False → group stays hidden, even right after
+        a ``setVisible(True)`` on the row).
         """
         if not hasattr(self, "_anim_group"):
             return
@@ -458,9 +465,9 @@ class _DisplayBlock(QWidget):
         has_content = (
             getattr(self, "spin_cb", None) is not None
             or getattr(self, "sync_cb", None) is not None
-            or (hasattr(self, "time_row") and self.time_row.isVisible())
-            or (hasattr(self, "speed_row") and self.speed_row.isVisible())
-            or (hasattr(self, "level_row") and self.level_row.isVisible())
+            or (hasattr(self, "time_row") and not self.time_row.isHidden())
+            or (hasattr(self, "speed_row") and not self.speed_row.isHidden())
+            or (hasattr(self, "level_row") and not self.level_row.isHidden())
         )
         self._anim_group.setVisible(has_content)
 
