@@ -94,10 +94,10 @@ class _TabState:
     # time dims (daily + monthly) stay aligned. ``None`` while no
     # time-varying field is on screen (also for the Ico/LonLat tabs).
     time_cursor: object = None
-    # Playback loops by default — wraps to the start at the end of the time
-    # axis. Unticking the Loop checkbox makes playback stop at the last
-    # frame instead. Tab-shared (same semantics as autorotate).
-    loop_playback: bool = True
+    # Playback loop is OFF by default — climate users typically want
+    # playback to stop at the simulation's end rather than silently
+    # restarting. Tick the Loop checkbox to enable wrap-to-start.
+    loop_playback: bool = False
     # Playback speed in *simulated time per real time* — see
     # ``timeline.PlaybackBar`` for the rationale (multi-axis files need
     # a physical-time-anchored pace so a monthly pane and a daily pane

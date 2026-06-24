@@ -89,7 +89,6 @@ class PlaybackBar(QWidget):
         self.speed_box.setRange(10, 10000)
         self.speed_box.setSingleStep(50)
         self.speed_box.setValue(500)
-        self.speed_box.setSuffix(" ms /")
         self.speed_box.setFixedHeight(24)
         self.speed_box.setKeyboardTracking(False)
         self.speed_box.setToolTip(
@@ -100,22 +99,31 @@ class PlaybackBar(QWidget):
         self.speed_box.valueChanged.connect(self._emit_speed)
         layout.addWidget(self.speed_box)
 
+        # "ms /" outside the spinbox so the box reads cleanly and the
+        # full unit equation ('500 ms / day') is visible at a glance.
+        layout.addWidget(QLabel("ms /"))
+
         self.unit_combo = QComboBox()
         self.unit_combo.addItems(list(PLAYBACK_UNITS))
         self.unit_combo.setFixedHeight(24)
+        # Widen the combo so day/month/year + the dropdown arrow have
+        # comfortable room — the default sizeHint was too tight.
+        self.unit_combo.setMinimumWidth(80)
         self.unit_combo.currentTextChanged.connect(self._emit_speed)
         layout.addWidget(self.unit_combo)
 
-        layout.addStretch(1)
-
+        # Loop sits next to the speed controls (left-grouped with
+        # everything else) rather than pushed to the far right.
         self.loop_cb = QCheckBox("Loop")
-        self.loop_cb.setChecked(True)
+        self.loop_cb.setChecked(False)
         self.loop_cb.setToolTip(
             "Wrap back to the first sample at the end of the time range. "
             "Off: stop at the last frame."
         )
         self.loop_cb.toggled.connect(self.loop_toggled)
         layout.addWidget(self.loop_cb)
+
+        layout.addStretch(1)
 
     def _on_play_toggled(self, on: bool) -> None:
         self.play_btn.setText("⏸" if on else "▶")

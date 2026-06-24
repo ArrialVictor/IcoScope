@@ -81,12 +81,12 @@ def test_loop_checkbox_toggle_updates_file_state(make_main_window):
     win = make_main_window()
     _setup_time_field(win)
     cb = win._timeline_strip.playback_bar.loop_cb
-    assert cb.isChecked()                                  # default ON
-    assert win._file_state.loop_playback is True
-
-    cb.setChecked(False)
-    QCoreApplication.processEvents()
+    assert not cb.isChecked()                              # default OFF
     assert win._file_state.loop_playback is False
+
+    cb.setChecked(True)
+    QCoreApplication.processEvents()
+    assert win._file_state.loop_playback is True
 
 
 def test_speed_change_updates_file_state(make_main_window):
