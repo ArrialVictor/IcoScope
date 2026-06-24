@@ -115,7 +115,7 @@ _DISPLAY_SIGNALS_BASE = (
     "export_clicked",
 )
 _DISPLAY_SIGNALS_TIME = ("time_changed", "play_toggled", "play_speed_changed",
-                         "level_changed")
+                         "loop_toggled", "level_changed")
 
 # Signal subsets used by FileTab's mode-split blocks (Global vs Pane).
 # Coloring + per-pane animation widgets (including the play-speed step
@@ -125,7 +125,8 @@ _DISPLAY_SIGNALS_TIME = ("time_changed", "play_toggled", "play_speed_changed",
 _DISPLAY_SIGNALS_PANE = (
     "color_by_changed", "cmap_changed", "colorbar_toggled", "center_zero_toggled",
     "cbar_color_changed",
-    "time_changed", "play_toggled", "play_speed_changed", "level_changed",
+    "time_changed", "play_toggled", "play_speed_changed", "loop_toggled",
+    "level_changed",
 )
 _DISPLAY_SIGNALS_GLOBAL = (
     "coastlines_toggled", "graticule_toggled", "edges_toggled",

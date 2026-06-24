@@ -113,7 +113,19 @@ class Playback:
             w.panel.file_tab.display.play_btn.setChecked(False)
             return
         n = meta["shape"][0]
-        new_idx = (pane.time_index + 1) % n
+        next_idx = pane.time_index + 1
+        if next_idx >= n:
+            # Past the last sample. Loop on → wrap to 0 (default behaviour).
+            # Loop off → stop at the last frame so the user sees where the
+            # simulation ended without it silently restarting.
+            if w._file_state.loop_playback:
+                new_idx = 0
+            else:
+                self._play_timer.stop()
+                w.panel.file_tab.display.play_btn.setChecked(False)
+                return
+        else:
+            new_idx = next_idx
         # Triggers _on_time_changed via the tab's time_changed signal,
         # which writes through pane_state too — the selected pane is
         # updated, no other panes are touched.

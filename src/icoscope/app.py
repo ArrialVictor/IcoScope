@@ -87,6 +87,10 @@ class _TabState:
     # time dims (daily + monthly) stay aligned. ``None`` while no
     # time-varying field is on screen (also for the Ico/LonLat tabs).
     time_cursor: object = None
+    # Playback loops by default — wraps to the start at the end of the time
+    # axis. Unticking the Loop checkbox makes playback stop at the last
+    # frame instead. Tab-shared (same semantics as autorotate).
+    loop_playback: bool = True
     # Per-pane state. Default to a single pane; the File tab may grow this
     # list to 2 or 4 entries when the user picks a multi-pane layout.
     panes: list = field(default_factory=lambda: [PaneState()])
@@ -325,6 +329,7 @@ class MainWindow(QMainWindow):
         self.panel.file_tab.level_changed.connect(self._on_level_changed)
         self.panel.file_tab.play_toggled.connect(self._on_play_toggled)
         self.panel.file_tab.play_speed_changed.connect(self._on_play_speed_changed)
+        self.panel.file_tab.loop_toggled.connect(self._on_loop_toggled)
         self.panel.tabs.currentChanged.connect(self._on_tab_changed)
 
         # Cached meshes so tab-switching doesn't trigger expensive recomputes.
@@ -1873,6 +1878,10 @@ class MainWindow(QMainWindow):
 
     def _on_play_speed_changed(self, ms):
         self.playback.set_speed(ms)
+
+    def _on_loop_toggled(self, on: bool) -> None:
+        """User toggled the playback Loop checkbox."""
+        self._file_state.loop_playback = on
 
     def _on_spin(self, on):
         if on:
