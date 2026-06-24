@@ -140,7 +140,22 @@ class Playback:
             state.playback_speed_unit, PLAYBACK_UNIT_SECONDS["day"])
         units_per_tick = PLAYBACK_TICK_MS / max(state.playback_speed_value, 1)
         seconds_per_tick = units_per_tick * seconds_per_unit
-        new_cursor = cursor + timedelta(seconds=seconds_per_tick)
+        try:
+            new_cursor = cursor + timedelta(seconds=seconds_per_tick)
+        except TypeError:
+            # cftime non-standard calendars (Datetime360Day, DatetimeNoLeap
+            # on older cftime versions) reject Python ``timedelta``
+            # arithmetic. Fall back to "advance the active pane by one
+            # sample" — the pre-cursor-stride behaviour. The pace becomes
+            # axis-dependent again on these files, but playback works.
+            ap = w.pane_state
+            meta = w._file_state.file_fields.get(ap.color_by)
+            times = w._times_for(meta) if meta else None
+            if times is None or len(times) == 0:
+                self._stop_and_uncheck()
+                return
+            next_idx = min(ap.time_index + 1, len(times) - 1)
+            new_cursor = times[next_idx]
 
         if new_cursor > t1:
             # Land exactly on the last frame, then stop so the user sees

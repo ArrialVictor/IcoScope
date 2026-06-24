@@ -598,8 +598,12 @@ class MainWindow(QMainWindow):
         is_file_field = field in file_fields and self.file_path is not None
 
         if self._clim_shared and is_file_field:
-            symmetric = self._file_state.clim_symmetric.get(
-                field, pane.center_zero)
+            # Shared mode: clim_symmetric is the SOLE source of truth.
+            # Fall back to ``False`` (not pane.center_zero) for fields
+            # never explicitly toggled, so a pane that briefly had a
+            # different color_by with a stale per-pane center_zero
+            # can't drag the shared value off course.
+            symmetric = self._file_state.clim_symmetric.get(field, False)
             lo_hi = self._cached_field_clim(field)
             if lo_hi is None:
                 return None
@@ -635,12 +639,21 @@ class MainWindow(QMainWindow):
         full daily-output `temp` (~570 MB). Status-bar message keeps
         the user informed during the wait. Cache stores result in
         ``_file_state.clim_cache`` so subsequent accesses are O(1).
+
+        Runs **atomically** — no ``processEvents()`` inside the loop. An
+        earlier draft pumped events between slabs to keep the UI
+        responsive, but that opened a re-entrancy window where the user
+        could close the file (or otherwise mutate state) mid-scan and
+        the loop would keep reading via the stale FileContext. Better
+        to freeze the UI briefly than to silently corrupt state.
         """
         meta = self._file_state.file_fields.get(field)
         if not meta or self.file_path is None:
             return None
         from .loader import read_field
         ctx = self._file_cache.get("context") if self._file_cache else None
+        # One processEvents() before the loop to actually paint the
+        # status message; none during the loop (see docstring).
         self.statusBar().showMessage(
             f"Computing colour range for {field}…", 0)
         QApplication.processEvents()
@@ -1196,11 +1209,13 @@ class MainWindow(QMainWindow):
         ft.set_color_by(pane.color_by)
         ft.set_cmap(pane.cmap)
         block = ft.display_pane
-        # In shared mode the symmetric flag is field-shared, not per-pane:
-        # read from the shared dict so switching to a pane displaying an
-        # already-symmetric field shows the box checked.
-        if self._clim_shared and pane.color_by in self._file_state.clim_symmetric:
-            shown_symmetric = self._file_state.clim_symmetric[pane.color_by]
+        # Shared mode: clim_symmetric is the SOLE source of truth.
+        # Default to False for fields never explicitly toggled (matches
+        # the dict-default in _clim, so checkbox state and rendered
+        # clim agree). Per-pane mode: read pane.center_zero.
+        if self._clim_shared:
+            shown_symmetric = self._file_state.clim_symmetric.get(
+                pane.color_by, False)
         else:
             shown_symmetric = pane.center_zero
         block.center_cb.blockSignals(True)
@@ -1470,36 +1485,58 @@ class MainWindow(QMainWindow):
         self._build_scene()
 
     def _on_center_zero(self, on):
-        self.pane_state.center_zero = on
-        # In shared mode the toggle is field-shared: propagate to every
-        # pane displaying the same field so cross-pane colourbars stay
-        # consistent. Also seed/update the file-state entry that `_clim`
-        # reads from in shared mode.
-        if self._clim_shared:
-            field = self.pane_state.color_by
-            if field and field != "None":
-                self._file_state.clim_symmetric[field] = on
-                for i in range(self._pane_container.n_visible):
-                    if self.state.panes[i].color_by == field:
-                        self.state.panes[i].center_zero = on
+        """User toggled the per-pane 'Symmetric scale around 0' checkbox.
+
+        Shared mode: ``_file_state.clim_symmetric[field]`` is the single
+        source of truth; ``_clim`` and ``_sync_pane_widgets`` read from
+        it (never from per-pane ``center_zero``). Just write the field's
+        entry — no propagation loop needed, because nothing reads the
+        per-pane copies in shared mode.
+
+        Per-pane mode: ``pane.center_zero`` is the source of truth and
+        is what ``_clim`` reads. Write only the per-pane copy.
+        """
+        field = self.pane_state.color_by
+        if self._clim_shared and field and field != "None":
+            self._file_state.clim_symmetric[field] = on
+        else:
+            self.pane_state.center_zero = on
         self._build_scene()
 
     def _on_clim_shared_toggled(self, on: bool) -> None:
-        """User flipped View → Share colour range across panes."""
+        """User flipped View → Share colour range across panes.
+
+        On enable: snapshot every visible pane's current ``center_zero``
+        into the field-shared dict, with active-pane wins on conflicts.
+        After this the per-pane ``center_zero`` is dead state in shared
+        mode (writes/reads go through the dict).
+
+        On disable: write each visible pane's effective shared value
+        BACK into its ``center_zero`` so the symmetric visual stays
+        consistent across the mode switch (no silent flip to autoscale).
+        """
         self._clim_shared = on
         if on:
-            # Snapshot the current per-pane center_zero state into the
-            # field-shared dict — active pane wins on conflicts, then
-            # other panes converge on subsequent refreshes.
+            # Snapshot: any field not in the dict gets seeded from a
+            # pane currently showing it; active pane wins outright.
             for i in range(self._pane_container.n_visible):
                 pane = self.state.panes[i]
                 if pane.color_by and pane.color_by != "None":
                     self._file_state.clim_symmetric.setdefault(
                         pane.color_by, pane.center_zero)
-            # Active pane wins outright.
             ap = self.state.panes[self._active_pane_idx]
             if ap.color_by and ap.color_by != "None":
                 self._file_state.clim_symmetric[ap.color_by] = ap.center_zero
+        else:
+            # Carry the shared value back into each visible pane's
+            # per-pane state so the visual doesn't change at the moment
+            # the user flips the toggle — they'll see the same colourbar
+            # they had a second ago, just now governed by per-pane state.
+            for i in range(self._pane_container.n_visible):
+                pane = self.state.panes[i]
+                if pane.color_by in self._file_state.clim_symmetric:
+                    pane.center_zero = \
+                        self._file_state.clim_symmetric[pane.color_by]
         self._build_scene()
 
     def _on_edge_color(self, hex_str):
@@ -1788,6 +1825,14 @@ class MainWindow(QMainWindow):
         self._file_state.color_by = "None"
         self._file_state.time_index = 0
         self._file_state.level_index = 0
+        # Clim cache + symmetric dict are keyed by field name; if the
+        # new file happens to share a name with the previous file (e.g.
+        # 'tas' in both), the cached (min, max) from the previous file
+        # would render the new file with the wrong colour range. Drop
+        # them on every file open, not just on explicit close.
+        self._file_state.time_cursor = None
+        self._file_state.clim_cache = {}
+        self._file_state.clim_symmetric = {}
         self._file_cache = {
             "path": path,
             "verts": verts,
