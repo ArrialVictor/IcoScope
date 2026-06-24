@@ -27,7 +27,11 @@ from qtpy.QtWidgets import QSizePolicy, QVBoxLayout, QWidget
 # without dominating the layout. Update both together if the row height
 # grows; the strip's setFixedHeight uses N × TRACK_HEIGHT + padding.
 TRACK_HEIGHT = 28
-LABEL_WIDTH = 96   # pixels reserved on the left for the track label
+# Track region widths, left to right:
+#   [lock] [label] [plot area with dots + cursor] [value text]
+LOCK_WIDTH = 22       # toggle area on the very left
+LABEL_WIDTH = 96      # field-name label (clickable → select pane)
+VALUE_WIDTH = 96      # right-hand current-pick value
 HORIZONTAL_PADDING = 12
 
 
@@ -43,15 +47,29 @@ class Track(QWidget):
     label
         Short string shown left of the track (typically the field name).
 
+    The mouse press is split by region:
+
+    - Click on the lock area (very left) → :attr:`lock_clicked`.
+    - Click on the label area → :attr:`label_clicked`.
+    - Click on the plot area → :attr:`clicked_at` (drag continues this).
+
     Signals
     -------
     clicked_at
         Emitted with a fraction in ``[0, 1]`` mapped back to the shared
         datetime domain by the parent. The parent decides what to do
         with it (currently: set the master cursor).
+    label_clicked
+        Emitted with no payload when the user clicks the field-name
+        label — the parent reports it upward as "select this pane".
+    lock_clicked
+        Emitted with no payload when the user clicks the lock area —
+        the parent toggles the pane's time_locked state.
     """
 
     clicked_at = Signal(float)
+    label_clicked = Signal()
+    lock_clicked = Signal()
 
     def __init__(self, label: str, parent: QWidget | None = None):
         super().__init__(parent)
@@ -60,6 +78,8 @@ class Track(QWidget):
         self._domain_t0 = None          # parent-supplied range
         self._domain_t1 = None
         self._cursor_t = None
+        self._value_text = ""           # current-pick value, "" when no pick
+        self._locked = False
         self.setFixedHeight(TRACK_HEIGHT)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.setMouseTracking(False)
@@ -85,6 +105,35 @@ class Track(QWidget):
         self._label = label
         self.update()
 
+    def set_value(self, text: str) -> None:
+        """Update the right-hand value text (empty string hides it)."""
+        self._value_text = text or ""
+        self.update()
+
+    def set_locked(self, locked: bool) -> None:
+        """Toggle the lock visual + state (caller decides the semantics)."""
+        self._locked = bool(locked)
+        self.update()
+
+    @property
+    def locked(self) -> bool:
+        """Current lock state (for tests)."""
+        return self._locked
+
+    @property
+    def value_text(self) -> str:
+        """Current value-column text (for tests)."""
+        return self._value_text
+
+    def _plot_x0(self) -> int:
+        """Left edge of the plot area in widget pixels."""
+        return LOCK_WIDTH + LABEL_WIDTH + HORIZONTAL_PADDING
+
+    def _plot_w(self) -> int:
+        """Width of the plot area (between left-pad and value column)."""
+        return (self.width() - LOCK_WIDTH - LABEL_WIDTH - VALUE_WIDTH
+                - 2 * HORIZONTAL_PADDING)
+
     def _x_for(self, t) -> float | None:
         """Map a datetime ``t`` to an x pixel within the plot area."""
         if (t is None or self._domain_t0 is None
@@ -99,24 +148,32 @@ class Track(QWidget):
         except AttributeError:
             ratio = (t - self._domain_t0) / total
         ratio = max(0.0, min(1.0, float(ratio)))
-        plot_w = self.width() - LABEL_WIDTH - 2 * HORIZONTAL_PADDING
-        return LABEL_WIDTH + HORIZONTAL_PADDING + ratio * plot_w
+        return self._plot_x0() + ratio * self._plot_w()
 
     def paintEvent(self, _event) -> None:
-        """Custom paint: label, baseline, sample dots, cursor line."""
+        """Custom paint: lock, label, baseline, sample dots, cursor, value."""
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
-
-        # Left-hand label, vertically centred and elided to fit.
-        p.setPen(QColor("#cccccc"))
         fm = QFontMetrics(p.font())
+
+        # Lock icon — unicode padlock at the left. Filled colour when
+        # locked, dim outline-only when unlocked. Renders as a glyph so we
+        # don't ship a custom icon asset.
+        p.setPen(QColor("#d4a060") if self._locked else QColor("#444444"))
+        p.drawText(0, 0, LOCK_WIDTH, self.height(),
+                   Qt.AlignVCenter | Qt.AlignCenter,
+                   "🔒" if self._locked else "🔓")
+
+        # Label, vertically centred and elided to fit. Slightly brighter when
+        # the pane is unlocked to telegraph that the label is clickable.
+        p.setPen(QColor("#cccccc"))
         elided = fm.elidedText(self._label, Qt.ElideRight, LABEL_WIDTH - 8)
-        p.drawText(4, 0, LABEL_WIDTH - 8, self.height(),
+        p.drawText(LOCK_WIDTH + 4, 0, LABEL_WIDTH - 8, self.height(),
                    Qt.AlignVCenter | Qt.AlignRight, elided)
 
         # Baseline — thin horizontal line across the plot area.
-        plot_x0 = LABEL_WIDTH + HORIZONTAL_PADDING
-        plot_x1 = self.width() - HORIZONTAL_PADDING
+        plot_x0 = self._plot_x0()
+        plot_x1 = plot_x0 + self._plot_w()
         baseline_y = self.height() // 2
         p.setPen(QPen(QColor("#555555"), 1))
         p.drawLine(plot_x0, baseline_y, plot_x1, baseline_y)
@@ -139,20 +196,44 @@ class Track(QWidget):
                 p.setPen(QPen(QColor("#ff7a3a"), 2))
                 p.drawLine(int(x), 2, int(x), self.height() - 2)
 
+        # Right-hand current-pick value (empty when no pick).
+        if self._value_text:
+            value_x = self.width() - VALUE_WIDTH - 2
+            p.setPen(QColor("#cccccc"))
+            elided = fm.elidedText(self._value_text, Qt.ElideRight,
+                                   VALUE_WIDTH - 4)
+            p.drawText(value_x, 0, VALUE_WIDTH - 4, self.height(),
+                       Qt.AlignVCenter | Qt.AlignRight, elided)
+
     def mousePressEvent(self, event) -> None:
-        """Map the click x to a fraction in [0, 1] and emit ``clicked_at``."""
+        """Route the click to the right region: lock / label / plot."""
         x = event.position().x() if hasattr(event, "position") else event.x()
-        plot_x0 = LABEL_WIDTH + HORIZONTAL_PADDING
-        plot_w = self.width() - LABEL_WIDTH - 2 * HORIZONTAL_PADDING
+        if x < LOCK_WIDTH:
+            self.lock_clicked.emit()
+            return
+        if x < LOCK_WIDTH + LABEL_WIDTH:
+            self.label_clicked.emit()
+            return
+        plot_w = self._plot_w()
         if plot_w <= 0:
             return
-        frac = max(0.0, min(1.0, (x - plot_x0) / plot_w))
+        frac = max(0.0, min(1.0, (x - self._plot_x0()) / plot_w))
         self.clicked_at.emit(float(frac))
 
     def mouseMoveEvent(self, event) -> None:
-        """Treat drag as a continuous cursor update (same path as click)."""
-        if event.buttons() & Qt.LeftButton:
-            self.mousePressEvent(event)
+        """Drag on the plot area continues the cursor update."""
+        if not (event.buttons() & Qt.LeftButton):
+            return
+        x = event.position().x() if hasattr(event, "position") else event.x()
+        # Only the plot region scrubs — dragging across the label / lock
+        # shouldn't keep firing cursor updates.
+        if x < LOCK_WIDTH + LABEL_WIDTH:
+            return
+        plot_w = self._plot_w()
+        if plot_w <= 0:
+            return
+        frac = max(0.0, min(1.0, (x - self._plot_x0()) / plot_w))
+        self.clicked_at.emit(float(frac))
 
 
 class TimelineStrip(QWidget):
@@ -160,12 +241,23 @@ class TimelineStrip(QWidget):
 
     Configured by the main window via :meth:`set_panes` whenever the
     visible-pane set changes (layout switch, color-by change, file open).
-    Emits :attr:`cursor_changed` with the absolute datetime the user
-    clicked / dragged to on any track; the window then propagates the
-    cursor to every pane through the existing master-cursor sync.
+
+    Signals
+    -------
+    cursor_changed
+        Absolute datetime the user clicked / dragged to on any track —
+        the window propagates it to every pane via the master-cursor sync.
+    pane_selected
+        Pane index whose label area the user clicked — alternative to
+        clicking the sphere; the window calls ``_select_pane`` with it.
+    lock_toggle_requested
+        Pane index whose lock icon the user clicked. The window inverts
+        that pane's ``time_locked`` state.
     """
 
-    cursor_changed = Signal(object)   # datetime — sent on any track click/drag
+    cursor_changed = Signal(object)
+    pane_selected = Signal(int)
+    lock_toggle_requested = Signal(int)
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
@@ -194,10 +286,17 @@ class TimelineStrip(QWidget):
             track = self._tracks.pop()
             self._layout.removeWidget(track)
             track.deleteLater()
-        # Add tracks if we're growing.
+        # Add tracks if we're growing. Wire the per-region signals up here
+        # so the index in our list always matches the pane index the
+        # window cares about.
         while len(self._tracks) < len(panes):
+            idx = len(self._tracks)
             track = Track("", self)
             track.clicked_at.connect(self._on_track_clicked)
+            track.label_clicked.connect(
+                lambda i=idx: self.pane_selected.emit(i))
+            track.lock_clicked.connect(
+                lambda i=idx: self.lock_toggle_requested.emit(i))
             self._tracks.append(track)
             self._layout.addWidget(track)
 
@@ -226,6 +325,22 @@ class TimelineStrip(QWidget):
         """Move the shared cursor on every track to datetime ``t``."""
         for track in self._tracks:
             track.set_cursor(t)
+
+    def set_pane_values(self, values: Sequence[str]) -> None:
+        """Update each track's right-hand value text.
+
+        Pass an empty string for a track that has no pick / no value;
+        the value column hides on empty. Length mismatch is silently
+        clamped to the shorter — caller is responsible for passing one
+        entry per visible pane.
+        """
+        for track, text in zip(self._tracks, values, strict=False):
+            track.set_value(text)
+
+    def set_pane_locked(self, pane_idx: int, locked: bool) -> None:
+        """Update the lock icon on track ``pane_idx``."""
+        if 0 <= pane_idx < len(self._tracks):
+            self._tracks[pane_idx].set_locked(locked)
 
     def _on_track_clicked(self, frac: float) -> None:
         """Convert a track-fraction back to a datetime and emit upward."""

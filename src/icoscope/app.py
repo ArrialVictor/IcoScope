@@ -52,6 +52,11 @@ class PaneState:
     cbar_color_override: str | None = None
     time_index: int = 0
     level_index: int = 0
+    # Per-pane time lock — when True, the master cursor (timeline drag
+    # or other pane's slider scrub) does not update this pane's
+    # time_index. Useful for "current vs baseline" comparisons where
+    # one pane stays pinned to a fixed time while the others sweep.
+    time_locked: bool = False
 
 
 @dataclass
@@ -251,6 +256,9 @@ class MainWindow(QMainWindow):
         va_layout.addWidget(self._pane_container, stretch=1)
         self._timeline_strip = TimelineStrip(viewport_area)
         self._timeline_strip.cursor_changed.connect(self._on_timeline_cursor_changed)
+        self._timeline_strip.pane_selected.connect(self._on_pane_clicked)
+        self._timeline_strip.lock_toggle_requested.connect(
+            self._on_timeline_lock_toggled)
         va_layout.addWidget(self._timeline_strip)
         self.splitter.addWidget(viewport_area)
         self.plotter = self._pane_container.pane(0).plotter
@@ -979,6 +987,9 @@ class MainWindow(QMainWindow):
             self._set_lonlat(lon, lat)
         if hasattr(self, "value_label"):
             self._set_cell_value(cell_idx, lon=lon, lat=lat)
+        # Surface the same cell's value on every track of the timeline
+        # strip (each pane has its own scalar field at this cell).
+        self._refresh_timeline_pane_values()
 
     def _select_pane(self, idx: int | None) -> None:
         """Programmatic selection helper (used by clicks, Escape, tab switches).
@@ -1357,6 +1368,10 @@ class MainWindow(QMainWindow):
                 p.render()
         self._clear_lonlat()
         self._clear_cell_value()
+        # Clear per-track value columns on the timeline strip too — there's
+        # no pick anymore, no value to surface per pane.
+        if hasattr(self, "_timeline_strip"):
+            self._refresh_timeline_pane_values()
         if deselect_pane:
             self._select_pane(None)
 
@@ -1880,15 +1895,17 @@ class MainWindow(QMainWindow):
         Shared entry point used both by side-panel slider scrubs (via
         :meth:`_sync_cursor_from_pane`) and by direct drags on the bottom
         timeline strip. Each visible pane's ``time_index`` shifts to the
-        nearest sample on its own axis. The active pane's side-panel
-        slider follows along (signals blocked so we don't re-enter), and
-        the timeline strip's cursor marker is updated.
+        nearest sample on its own axis, **unless that pane has
+        ``time_locked=True``** (the user pinned it to a fixed time via the
+        timeline-strip lock). The active pane's side-panel slider follows
+        along (signals blocked so we don't re-enter), and the timeline
+        strip's cursor marker + per-pane value column are updated.
         """
         from .time_axis import nearest_time_index
         self._file_state.time_cursor = cursor
         for i in range(self._pane_container.n_visible):
             pane = self.state.panes[i]
-            if cursor is not None:
+            if cursor is not None and not pane.time_locked:
                 meta = self._file_state.file_fields.get(pane.color_by)
                 times = self._times_for(meta) if meta else None
                 if times is not None and len(times) > 0:
@@ -1908,6 +1925,52 @@ class MainWindow(QMainWindow):
             slider.blockSignals(False)
             self.panel.file_tab.set_time_label(slider.value())
         self._timeline_strip.set_cursor(cursor)
+        # Each pane's scalar field now corresponds to a different time
+        # slice — re-render the per-track value column from _last_pick.
+        self._refresh_timeline_pane_values()
+
+    def _on_timeline_lock_toggled(self, pane_idx: int) -> None:
+        """User clicked the lock icon on track ``pane_idx`` — invert state."""
+        if pane_idx >= len(self.state.panes):
+            return
+        pane = self.state.panes[pane_idx]
+        pane.time_locked = not pane.time_locked
+        self._timeline_strip.set_pane_locked(pane_idx, pane.time_locked)
+
+    def _refresh_timeline_pane_values(self) -> None:
+        """Populate each track's value column from ``_last_pick``.
+
+        Walks every visible pane and formats its current scalar at the
+        picked cell (cells are shared geometry, so the index is universal).
+        Tracks whose pane has no scalars yet (e.g. color_by is "None")
+        get an empty string and hide their value column.
+        """
+        if not hasattr(self, "_timeline_strip"):
+            return
+        if self._last_pick is None:
+            self._timeline_strip.set_pane_values(
+                [""] * self._pane_container.n_visible)
+            return
+        cell_idx, _lon, _lat = self._last_pick
+        values: list[str] = []
+        from .formatters import format_cell_value
+        for i in range(self._pane_container.n_visible):
+            arr = self._pane_scalars[i]
+            pane = self.state.panes[i]
+            if (arr is None or cell_idx >= len(arr)
+                    or pane.color_by == "None"):
+                values.append("")
+                continue
+            v = float(arr[cell_idx])
+            meta = self._file_state.file_fields.get(pane.color_by)
+            units = meta.get("units", "") if meta else ""
+            short, _ = format_cell_value(v, units)
+            # format_cell_value returns "Value: X K"; strip the "Value: "
+            # prefix — the track label already names the field.
+            if short.startswith("Value: "):
+                short = short[len("Value: "):]
+            values.append(short)
+        self._timeline_strip.set_pane_values(values)
 
     def _on_timeline_cursor_changed(self, cursor) -> None:
         """User dragged the timeline strip — set the master cursor + render."""
@@ -1943,6 +2006,12 @@ class MainWindow(QMainWindow):
             return
         self._timeline_strip.set_panes(tracks)
         self._timeline_strip.set_cursor(self._file_state.time_cursor)
+        # Rebuilding tracks resets their lock visuals — push the persisted
+        # per-pane state back so a layout change doesn't silently unlock.
+        for i in range(self._pane_container.n_visible):
+            self._timeline_strip.set_pane_locked(
+                i, self.state.panes[i].time_locked)
+        self._refresh_timeline_pane_values()
 
     def _on_level_changed(self, idx):
         if idx == self.pane_state.level_index:
