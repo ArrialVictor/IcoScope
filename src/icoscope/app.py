@@ -1934,12 +1934,19 @@ class MainWindow(QMainWindow):
         if pane_idx >= len(self.state.panes):
             return
         pane = self.state.panes[pane_idx]
-        pane.time_locked = not pane.time_locked
+        was_locked = pane.time_locked
+        pane.time_locked = not was_locked
         self._timeline_strip.set_pane_locked(pane_idx, pane.time_locked)
-        # Just-locked: the track cursor pins at the pane's frozen time.
-        # Just-unlocked: it jumps to the master cursor. Either way, the
-        # per-track cursor positions need a refresh.
-        self._refresh_timeline_cursors()
+        if was_locked:
+            # Just unlocked — the pane is now following the master cursor
+            # again. Re-propagate so its time_index + scalars + render
+            # catch up to wherever the cursor moved while it was locked.
+            self._set_master_cursor(self._file_state.time_cursor)
+            self._build_scene()
+        else:
+            # Just locked — pane stops following; only the per-track
+            # cursor visual needs updating (data stays where it was).
+            self._refresh_timeline_cursors()
 
     def _refresh_timeline_pane_values(self) -> None:
         """Populate each track's value column from ``_last_pick``.

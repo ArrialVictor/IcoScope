@@ -133,8 +133,8 @@ def test_locked_track_cursor_stays_at_pinned_time(make_main_window):
         "locked track cursor must stay at the pinned datetime"
 
 
-def test_unlocking_jumps_track_cursor_to_master(make_main_window):
-    """Unlocking a previously-locked track snaps it back to the master cursor."""
+def test_unlocking_jumps_track_cursor_and_data_to_master(make_main_window):
+    """Unlocking snaps both the cursor visual AND the pane data to master."""
     win = make_main_window()
     _setup_two_panes(win)
     win._select_pane(0)
@@ -142,14 +142,19 @@ def test_unlocking_jumps_track_cursor_to_master(make_main_window):
 
     win._on_timeline_lock_toggled(1)
     QCoreApplication.processEvents()
+    # While locked, drag the master cursor to monthly sample #1 (=day 30),
+    # which inside pane 2's daily axis is index 30.
     times = win._times_for(win._file_state.file_fields["tas_t"])
-    win._timeline_strip.cursor_changed.emit(times[3])
+    win._timeline_strip.cursor_changed.emit(times[1])
     QCoreApplication.processEvents()
-    assert win._timeline_strip._tracks[1]._cursor_t != times[3]
+    assert win.state.panes[1].time_index == 0, "locked pane stays at 0"
+    assert win._timeline_strip._tracks[1]._cursor_t != times[1]
 
     win._on_timeline_lock_toggled(1)         # unlock
     QCoreApplication.processEvents()
-    assert win._timeline_strip._tracks[1]._cursor_t == times[3], \
+    assert win.state.panes[1].time_index == 30, \
+        "unlocking must propagate the master cursor to time_index"
+    assert win._timeline_strip._tracks[1]._cursor_t == times[1], \
         "unlocking must snap the track cursor back to the master"
 
 
