@@ -2017,11 +2017,11 @@ class MainWindow(QMainWindow):
             meta = self._file_state.file_fields.get(pane.color_by)
             times = self._times_for(meta) if meta else None
             # Prefix the track label with the 1-indexed pane number so the
-            # strip is self-describing — track ordering matches viewport
-            # ordering (Pane 1 top) but the explicit number eliminates
-            # ambiguity when fields have similar names or when looking at
-            # the strip without the viewports in view.
-            label = (f"Pane {i + 1}: {pane.color_by}"
+            # strip is self-describing. Just the number (not "Pane N") to
+            # keep the prefix short when the field name is long — track
+            # ordering matches viewport ordering, so the surrounding
+            # context makes "1:" unambiguous.
+            label = (f"{i + 1}: {pane.color_by}"
                      if pane.color_by != "None" else f"Pane {i + 1}")
             if times is not None and len(times) > 0:
                 any_time_varying = True
