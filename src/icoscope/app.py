@@ -675,6 +675,23 @@ class MainWindow(QMainWindow):
         return (lo, hi)
 
     # ── rendering ─────────────────────────────────
+    def _render_visible_panes(self) -> None:
+        """Re-render every visible pane without reconfiguring its actors.
+
+        Cheaper than :meth:`_build_scene` — skips the per-pane
+        ``add_mesh`` call, which (despite same actor name) is what makes
+        PyVista tear down + recreate the scalar-bar actor and produces
+        the colourbar flicker during time/level scrubs. Use this on any
+        path that only updated the cell scalar arrays in place via
+        :meth:`_update_scalars_only`; the bound polydata has already
+        changed and the mapper picks it up on the next render.
+        """
+        if self._mesh is None:
+            self._render_empty_sphere()
+            return
+        for idx in range(self._pane_container.n_visible):
+            self._pane_container.pane(idx).plotter.render()
+
     def _build_scene(self):
         """Render the current scene on every visible pane.
 
@@ -759,11 +776,14 @@ class MainWindow(QMainWindow):
             # scientific viz where the colourmap is the message.
             lighting=False,
             show_scalar_bar=bar_on,
-            # ``scalar_bar_args`` is honoured only on bar creation —
-            # passing it when the bar already exists is a no-op anyway.
-            # Pass None on the unchanged path so we don't accidentally
-            # signal "create a bar" to a future PyVista version.
-            scalar_bar_args=bar_args if config_changed and bar_on else None,
+            # Always pass args when the bar is on. PyVista honours them
+            # only on bar creation — if the bar exists this is a no-op,
+            # but ``add_mesh`` internally tears down + recreates linked
+            # scalar bars in some versions, so we have to be ready to
+            # re-supply the styling (otherwise the recreated bar uses
+            # PyVista's defaults — notably black text instead of the
+            # user-chosen colour).
+            scalar_bar_args=bar_args if bar_on else None,
             reset_camera=False,
         )
         cache[pane_idx] = bar_config
@@ -2017,7 +2037,9 @@ class MainWindow(QMainWindow):
             self.panel.file_tab.set_time_label(idx)
         self._sync_cursor_from_pane(self._active_pane_idx)
         self._refresh_picked_value()
-        self._build_scene()
+        # Scrubs only mutate cell scalars in place — cheap re-render is
+        # enough and avoids the colourbar flicker caused by add_mesh.
+        self._render_visible_panes()
 
     def _update_pane_banner(self, pane_idx: int) -> None:
         """Show / hide the out-of-range banner on pane ``pane_idx``.
@@ -2190,7 +2212,7 @@ class MainWindow(QMainWindow):
     def _on_timeline_cursor_changed(self, cursor) -> None:
         """User dragged the timeline strip — set the master cursor + render."""
         self._set_master_cursor(cursor)
-        self._build_scene()
+        self._render_visible_panes()
 
     def _refresh_timeline_strip(self) -> None:
         """Rebuild the bottom timeline from the current visible-pane state.
@@ -2271,7 +2293,8 @@ class MainWindow(QMainWindow):
         self._refresh_scalars()
         self._refresh_picked_value()
         self._update_scalars_only()
-        self._build_scene()
+        # Same scalar-scrub optimisation as _on_time_changed.
+        self._render_visible_panes()
 
     def _on_play_toggled(self, on):
         self.playback.toggle_play(on)

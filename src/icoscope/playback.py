@@ -152,4 +152,7 @@ class Playback:
             return
 
         w._set_master_cursor(new_cursor)
-        w._build_scene()
+        # Scalar-only render — _set_master_cursor mutated each pane's
+        # cell scalars in place; no need to reconfigure actors (which is
+        # what causes colourbar flicker via add_mesh teardown).
+        w._render_visible_panes()
