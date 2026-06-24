@@ -21,7 +21,116 @@ from collections.abc import Sequence
 
 from qtpy.QtCore import Qt, Signal
 from qtpy.QtGui import QColor, QFontMetrics, QPainter, QPen
-from qtpy.QtWidgets import QPushButton, QSizePolicy, QVBoxLayout, QWidget
+from qtpy.QtWidgets import (
+    QCheckBox,
+    QComboBox,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QSizePolicy,
+    QSpinBox,
+    QVBoxLayout,
+    QWidget,
+)
+
+# Playback unit → simulated-seconds conversion. Months and years are
+# approximate (30-day month, 365-day year); the exact length doesn't
+# matter for the playback pace — it only sets how fast the cursor
+# advances per real second.
+PLAYBACK_UNIT_SECONDS = {
+    "day":   86_400,
+    "month": 30 * 86_400,
+    "year":  365 * 86_400,
+}
+PLAYBACK_UNITS = tuple(PLAYBACK_UNIT_SECONDS.keys())
+
+
+class PlaybackBar(QWidget):
+    """Header strip above the per-pane tracks: play + speed + loop.
+
+    Owns the time-playback controls for the multi-pane File tab. Values
+    are in *simulated time per real time* — "500 ms / day" means the
+    cursor advances one simulated day every 500 ms of wall clock. Lets
+    files mixing time axes (daily + monthly) play at a consistent
+    physical-time pace regardless of which pane is anchored: a monthly
+    pane holds the same value for ~15 s, a daily pane updates every
+    500 ms — both representing the same simulated period.
+
+    Signals
+    -------
+    play_toggled
+        ``True`` when the user pressed play; ``False`` on stop.
+    speed_changed
+        ``(value_ms, unit_name)`` — emitted when either the spinbox
+        value or the unit combo changes.
+    loop_toggled
+        ``True`` when looping is on (default).
+    """
+
+    play_toggled = Signal(bool)
+    speed_changed = Signal(int, str)
+    loop_toggled = Signal(bool)
+
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.setFixedHeight(30)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(4, 2, 4, 2)
+        layout.setSpacing(6)
+
+        self.play_btn = QPushButton("▶")
+        self.play_btn.setCheckable(True)
+        self.play_btn.setFixedSize(34, 24)
+        self.play_btn.toggled.connect(self._on_play_toggled)
+        layout.addWidget(self.play_btn)
+
+        layout.addWidget(QLabel("Speed:"))
+        self.speed_box = QSpinBox()
+        self.speed_box.setRange(10, 10000)
+        self.speed_box.setSingleStep(50)
+        self.speed_box.setValue(500)
+        self.speed_box.setSuffix(" ms /")
+        self.speed_box.setFixedHeight(24)
+        self.speed_box.setKeyboardTracking(False)
+        self.speed_box.setToolTip(
+            "Wall-clock milliseconds per simulated time unit. Lower is "
+            "faster — '500 ms / day' takes half a second to advance one "
+            "simulated day."
+        )
+        self.speed_box.valueChanged.connect(self._emit_speed)
+        layout.addWidget(self.speed_box)
+
+        self.unit_combo = QComboBox()
+        self.unit_combo.addItems(list(PLAYBACK_UNITS))
+        self.unit_combo.setFixedHeight(24)
+        self.unit_combo.currentTextChanged.connect(self._emit_speed)
+        layout.addWidget(self.unit_combo)
+
+        layout.addStretch(1)
+
+        self.loop_cb = QCheckBox("Loop")
+        self.loop_cb.setChecked(True)
+        self.loop_cb.setToolTip(
+            "Wrap back to the first sample at the end of the time range. "
+            "Off: stop at the last frame."
+        )
+        self.loop_cb.toggled.connect(self.loop_toggled)
+        layout.addWidget(self.loop_cb)
+
+    def _on_play_toggled(self, on: bool) -> None:
+        self.play_btn.setText("⏸" if on else "▶")
+        self.play_toggled.emit(on)
+
+    def _emit_speed(self) -> None:
+        self.speed_changed.emit(
+            self.speed_box.value(), self.unit_combo.currentText())
+
+    def set_playing(self, playing: bool) -> None:
+        """Push the play-button state from outside (e.g. end-of-playback stop)."""
+        self.play_btn.blockSignals(True)
+        self.play_btn.setChecked(playing)
+        self.play_btn.setText("⏸" if playing else "▶")
+        self.play_btn.blockSignals(False)
 
 # Track height and total-strip height tuned to land under the viewports
 # without dominating the layout. Update both together if the row height
@@ -290,6 +399,11 @@ class TimelineStrip(QWidget):
     cursor_changed = Signal(object)
     pane_selected = Signal(int)
     lock_toggle_requested = Signal(int)
+    # Re-emitted from the embedded PlaybackBar so the window only needs
+    # to connect to the strip for every multi-pane time interaction.
+    play_toggled = Signal(bool)
+    speed_changed = Signal(int, str)
+    loop_toggled = Signal(bool)
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
@@ -299,6 +413,14 @@ class TimelineStrip(QWidget):
         self._layout = QVBoxLayout(self)
         self._layout.setContentsMargins(4, 4, 4, 4)
         self._layout.setSpacing(2)
+        # Playback bar at the top — the play / speed / loop controls used
+        # to live in the side panel but they belong with the timeline
+        # since they're about advancing along time.
+        self.playback_bar = PlaybackBar(self)
+        self.playback_bar.play_toggled.connect(self.play_toggled)
+        self.playback_bar.speed_changed.connect(self.speed_changed)
+        self.playback_bar.loop_toggled.connect(self.loop_toggled)
+        self._layout.addWidget(self.playback_bar)
         self.setVisible(False)
 
     def set_panes(self, panes: Sequence[tuple[str, Sequence]]) -> None:
@@ -347,9 +469,12 @@ class TimelineStrip(QWidget):
             track.set_domain(self._domain_t0, self._domain_t1)
 
         # Fix the overall strip height so the splitter doesn't resize it.
+        # Height = playback bar + tracks + per-row spacing + outer margins.
         self.setFixedHeight(
-            len(panes) * TRACK_HEIGHT + len(panes) * 2  # spacing
-            + 8                                          # outer margins
+            self.playback_bar.height()
+            + len(panes) * TRACK_HEIGHT
+            + (len(panes) + 1) * 2   # spacing between bar + tracks
+            + 8                       # outer margins
         )
         self.setVisible(True)
 

@@ -1,13 +1,26 @@
-"""Auto-rotate spin timer + time-slider playback for the main window.
+"""Auto-rotate spin timer + time-cursor playback for the main window.
 
 Both timers live here; the main window's slots delegate. The spin timer
 rotates every visible pane's camera around its own up vector (kept in
 lockstep so multi-pane comparison stays aligned); the play timer
-advances the File-tab time slider, which re-fires the regular
-``_on_time_changed`` path so there's no duplicate scalar-refresh logic.
+advances the master time cursor at a configurable simulated-time-per-
+real-time pace (e.g. "500 ms / day"). Each tick computes a small
+cursor delta and reuses ``_set_master_cursor`` so multi-pane time
+resolution + render happens through the same path as a slider drag.
 """
+from datetime import timedelta
+
 import numpy as np
 from qtpy.QtCore import QTimer
+
+from .timeline import PLAYBACK_UNIT_SECONDS
+
+# Fixed internal tick rate — hides timer mechanics from the user. 50 ms
+# (20 fps) is smooth enough for visual cursor movement without taxing
+# the render path. The user-visible "Speed" control is in
+# simulated-time-per-real-time units (ms per day / month / year), not
+# this tick interval.
+PLAYBACK_TICK_MS = 50
 
 
 class Playback:
@@ -79,54 +92,65 @@ class Playback:
             plotter.render()
         self._window._syncing_cameras = prev_sync
 
-    # ── time-slider playback ──────────────────────
+    # ── time-cursor playback ──────────────────────
     def toggle_play(self, on: bool) -> None:
-        """Start or stop the time-slider auto-advance timer."""
+        """Start or stop the cursor-advance timer."""
         if on:
             if self._play_timer is None:
                 self._play_timer = QTimer(self._window)
-                self._play_timer.setInterval(
-                    self._window.panel.file_tab.display.speed_box.value())
+                self._play_timer.setInterval(PLAYBACK_TICK_MS)
                 self._play_timer.timeout.connect(self._play_step)
             self._play_timer.start()
         else:
             if self._play_timer is not None:
                 self._play_timer.stop()
 
-    def set_speed(self, ms: int) -> None:
-        """Update the play timer's interval (ms per step)."""
+    def _stop_and_uncheck(self) -> None:
+        """End playback + reset the PlaybackBar's play-button visual."""
         if self._play_timer is not None:
-            self._play_timer.setInterval(ms)
+            self._play_timer.stop()
+        self._window._timeline_strip.playback_bar.set_playing(False)
 
     def _play_step(self) -> None:
-        """Bump the File-tab time slider one step; loop at the end.
+        """Advance the master cursor by one stride.
 
-        Reads from the selected pane's state (``pane_state``) so playback
-        targets whichever pane the user has focused — without this the
-        play button silently advanced pane 0 regardless of selection.
+        Stride = ``(PLAYBACK_TICK_MS / speed_ms) * seconds_per_unit``,
+        where ``speed_ms`` is the user-set "ms per day/month/year" value.
+        End-of-axis (cursor past the union of all visible panes' axes):
+        loop on → wrap to the union's first sample; loop off → stop +
+        uncheck the PlaybackBar's play button.
         """
         w = self._window
-        pane = w.pane_state
-        meta = w._file_state.file_fields.get(pane.color_by)
-        if not meta or not meta.get("time_varying"):
-            self._play_timer.stop()
-            w.panel.file_tab.display.play_btn.setChecked(False)
+        state = w._file_state
+        strip = w._timeline_strip
+        t0, t1 = strip._domain_t0, strip._domain_t1
+        if t0 is None or t1 is None:
+            # No time-varying field visible — nothing to play.
+            self._stop_and_uncheck()
             return
-        n = meta["shape"][0]
-        next_idx = pane.time_index + 1
-        if next_idx >= n:
-            # Past the last sample. Loop on → wrap to 0 (default behaviour).
-            # Loop off → stop at the last frame so the user sees where the
-            # simulation ended without it silently restarting.
-            if w._file_state.loop_playback:
-                new_idx = 0
+
+        cursor = state.time_cursor
+        if cursor is None:
+            # First tick after pressing play with no prior scrub —
+            # initialise at the union's first sample.
+            w._set_master_cursor(t0)
+            return
+
+        seconds_per_unit = PLAYBACK_UNIT_SECONDS.get(
+            state.playback_speed_unit, PLAYBACK_UNIT_SECONDS["day"])
+        units_per_tick = PLAYBACK_TICK_MS / max(state.playback_speed_value, 1)
+        seconds_per_tick = units_per_tick * seconds_per_unit
+        new_cursor = cursor + timedelta(seconds=seconds_per_tick)
+
+        if new_cursor > t1:
+            if state.loop_playback:
+                new_cursor = t0
             else:
-                self._play_timer.stop()
-                w.panel.file_tab.display.play_btn.setChecked(False)
+                # Land exactly on the last frame, then stop so the user
+                # sees where the simulation ended.
+                w._set_master_cursor(t1)
+                self._stop_and_uncheck()
                 return
-        else:
-            new_idx = next_idx
-        # Triggers _on_time_changed via the tab's time_changed signal,
-        # which writes through pane_state too — the selected pane is
-        # updated, no other panes are touched.
-        w.panel.file_tab.display.time_slider.setValue(new_idx)
+
+        w._set_master_cursor(new_cursor)
+        w._build_scene()

@@ -273,6 +273,13 @@ class _DisplayBlock(QWidget):
         self.play_btn.setCheckable(True)
         self.play_btn.toggled.connect(self._on_play_toggled)
         trow_top.addWidget(self.play_btn)
+        # The File-tab pane block delegates playback to the bottom
+        # timeline strip's PlaybackBar (which has play/speed/loop as one
+        # group). Hide the per-pane play button to avoid two controls
+        # racing for the same playback state. The Ico/LonLat combined
+        # blocks keep the inline play button — they have no strip.
+        if self.mode == "pane":
+            self.play_btn.setVisible(False)
         self.time_slider = QSlider(Qt.Horizontal)
         self.time_slider.setRange(0, 0)
         self.time_slider.setFixedHeight(ROW_H)
@@ -322,6 +329,10 @@ class _DisplayBlock(QWidget):
         srow.addWidget(self.loop_cb)
         al.addWidget(self.speed_row)
         self.speed_row.setVisible(False)
+        # Speed / Loop are on the strip's PlaybackBar in pane mode — keep
+        # this row in the widget tree (for back-compat references) but
+        # never show it.
+        self._pane_mode_hides_speed_row = (self.mode == "pane")
 
         # Vertical-level slider: shown only when the active field has a
         # presnivs dim. Label shows the pressure value (hPa) at the current
@@ -412,7 +423,9 @@ class _DisplayBlock(QWidget):
             self._n_time = n_steps
             self._times = times
             self.time_row.setVisible(True)
-            self.speed_row.setVisible(True)
+            # speed_row hosts Step + Loop which moved to the timeline
+            # strip's PlaybackBar in pane mode — keep it hidden there.
+            self.speed_row.setVisible(not self._pane_mode_hides_speed_row)
             self.time_slider.blockSignals(True)
             self.time_slider.setRange(0, n_steps - 1)
             self.time_slider.setValue(0)

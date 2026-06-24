@@ -98,6 +98,13 @@ class _TabState:
     # axis. Unticking the Loop checkbox makes playback stop at the last
     # frame instead. Tab-shared (same semantics as autorotate).
     loop_playback: bool = True
+    # Playback speed in *simulated time per real time* — see
+    # ``timeline.PlaybackBar`` for the rationale (multi-axis files need
+    # a physical-time-anchored pace so a monthly pane and a daily pane
+    # play at consistent rates instead of one of them jumping by 30×).
+    # 500 ms / day = one simulated day per half-second of wall clock.
+    playback_speed_value: int = 500
+    playback_speed_unit: str = "day"
     # Per-pane state. Default to a single pane; the File tab may grow this
     # list to 2 or 4 entries when the user picks a multi-pane layout.
     panes: list = field(default_factory=lambda: [PaneState()])
@@ -259,6 +266,12 @@ class MainWindow(QMainWindow):
         self._timeline_strip.pane_selected.connect(self._on_pane_clicked)
         self._timeline_strip.lock_toggle_requested.connect(
             self._on_timeline_lock_toggled)
+        # Playback controls moved from the side panel into the strip's
+        # header — they're about advancing along time, so they belong with
+        # the timeline. Single source of truth via the strip.
+        self._timeline_strip.play_toggled.connect(self._on_play_toggled)
+        self._timeline_strip.speed_changed.connect(self._on_playback_speed_changed)
+        self._timeline_strip.loop_toggled.connect(self._on_loop_toggled)
         va_layout.addWidget(self._timeline_strip)
         self.splitter.addWidget(viewport_area)
         self.plotter = self._pane_container.pane(0).plotter
@@ -348,9 +361,10 @@ class MainWindow(QMainWindow):
         self.panel.file_tab.close_file_clicked.connect(self._on_close_file)
         self.panel.file_tab.time_changed.connect(self._on_time_changed)
         self.panel.file_tab.level_changed.connect(self._on_level_changed)
-        self.panel.file_tab.play_toggled.connect(self._on_play_toggled)
-        self.panel.file_tab.play_speed_changed.connect(self._on_play_speed_changed)
-        self.panel.file_tab.loop_toggled.connect(self._on_loop_toggled)
+        # NOTE: File-tab play / speed / loop signals are no longer
+        # connected — the controls live on the timeline strip now. The
+        # side panel's display_pane still emits them (dead signals) for
+        # back-compat with the other tabs' combined display block.
         self.panel.tabs.currentChanged.connect(self._on_tab_changed)
 
         # Cached meshes so tab-switching doesn't trigger expensive recomputes.
@@ -2076,8 +2090,10 @@ class MainWindow(QMainWindow):
     def _on_play_toggled(self, on):
         self.playback.toggle_play(on)
 
-    def _on_play_speed_changed(self, ms):
-        self.playback.set_speed(ms)
+    def _on_playback_speed_changed(self, value_ms: int, unit: str) -> None:
+        """User changed the strip's speed spinbox or unit combo."""
+        self._file_state.playback_speed_value = value_ms
+        self._file_state.playback_speed_unit = unit
 
     def _on_loop_toggled(self, on: bool) -> None:
         """User toggled the playback Loop checkbox."""
