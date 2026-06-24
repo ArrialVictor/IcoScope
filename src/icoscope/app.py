@@ -42,7 +42,8 @@ class PaneState:
     For the Ico and LonLat tabs there is always exactly one pane (the
     synthetic mesh rendering). For the File tab there may be 1, 2, or
     4 panes in multi-pane layouts; each pane independently picks its
-    own field (``color_by``), colormap, time/level indices, etc.
+    own field (``color_by``), colormap, time/level indices, symmetric
+    scaling, colorbar on/off, and time-lock state.
     """
 
     color_by: str = "None"
@@ -52,10 +53,11 @@ class PaneState:
     cbar_color_override: str | None = None
     time_index: int = 0
     level_index: int = 0
-    # Per-pane time lock — when True, the master cursor (timeline drag
-    # or other pane's slider scrub) does not update this pane's
-    # time_index. Useful for "current vs baseline" comparisons where
-    # one pane stays pinned to a fixed time while the others sweep.
+    # time_locked: when True, the master cursor (timeline drag or another
+    # pane's slider scrub) does not update this pane's time_index — the
+    # pane stays pinned to whatever datetime its time_index resolves to
+    # on its own axis. Useful for "current vs baseline" comparisons where
+    # one pane holds a fixed time while the others sweep.
     time_locked: bool = False
 
 
@@ -264,13 +266,12 @@ class MainWindow(QMainWindow):
         self.splitter = QSplitter(Qt.Horizontal)
         self.splitter.setChildrenCollapsible(False)
         self.splitter.setHandleWidth(4)
-        # Multi-pane scaffold: the central viewport is now a PaneContainer
-        # that holds up to 4 panes. Stage 2 always shows exactly one pane
-        # (pane 0) so single-pane behaviour is unchanged. Stage 3 adds the
-        # View menu to switch between 1 / 1×2 / 2×2 layouts.
-        # PaneContainer + TimelineStrip sit in a vertical container so the
-        # strip docks under the viewports. The container goes into the main
-        # horizontal splitter (where PaneContainer used to live directly).
+        # The central viewport is a PaneContainer holding up to 4 panes;
+        # the active layout (1 / 1×2 / 2×2) is set via View → Pane layout
+        # and applied through PaneContainer.set_layout. PaneContainer +
+        # TimelineStrip sit in a vertical container so the strip docks
+        # under the viewports; the container goes into the main horizontal
+        # splitter (with the side panel on the right).
         viewport_area = QWidget(self.splitter)
         va_layout = QVBoxLayout(viewport_area)
         va_layout.setContentsMargins(0, 0, 0, 0)

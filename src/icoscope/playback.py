@@ -59,11 +59,10 @@ class Playback:
         """Advance every visible pane's camera one step around its up vector.
 
         In multi-pane mode this rotates all visible panes simultaneously
-        so the comparison stays geometrically aligned. Each pane uses its
-        own camera (cameras aren't truly linked yet — that's the next PR
-        in the multi-pane series), but they all receive the same angular
-        delta and start from the same configured camera, so they stay
-        visually in step.
+        so the comparison stays geometrically aligned. Each pane keeps
+        its own camera; when View → Camera sync is on (the default), the
+        ``_syncing_cameras`` guard on MainWindow lets the per-tick delta
+        mirror across panes without re-entering the ModifiedEvent loop.
         """
         container = getattr(self._window, "_pane_container", None)
         plotters = (

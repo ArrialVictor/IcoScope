@@ -1,13 +1,12 @@
-"""Pane widgets for the multi-pane scaffold.
+"""Pane widgets for the multi-pane viewport.
 
 A :class:`Pane` wraps a single :class:`pyvistaqt.QtInteractor` with a 2-px
 border that toggles between transparent (unselected) and an accent colour
-(selected). :class:`PaneContainer` holds N panes in a splitter-based
-layout (1 / 1×2 / 2×2 are configured in :meth:`PaneContainer.set_layout`).
-
-Stage 2 of the multi-pane scaffold (see ``_design/multi-pane-layout-
-scaffold.md``) introduces these widgets but the main window still hosts
-exactly one pane; layout switching lands in stage 3.
+(selected), plus a VTK 2-D text-actor banner used to surface "showing
+nearest" cursor-out-of-range messages. :class:`PaneContainer` holds up to
+four panes in a splitter-based layout (1 / 1×2 / 2×2 are configured in
+:meth:`PaneContainer.set_layout`) and is the central viewport that the
+main window mounts in its horizontal splitter.
 """
 from __future__ import annotations
 
@@ -111,16 +110,14 @@ class Pane(QFrame):
 
 
 class PaneContainer(QWidget):
-    """Holds N panes in a splitter layout (1 / 1×2 / 2×2).
+    """Holds up to four panes in a splitter layout (1 / 1×2 / 2×2).
 
-    The full pane list is created lazily on first :meth:`set_layout` call
-    and grown as needed — switching from 1 to 2×2 instantiates new panes;
-    switching back to 1 hides slots 1..3 but keeps them in memory so their
-    state survives.
-
-    Stage 2 only ever populates one pane (single-pane). :meth:`set_layout`
-    handles the multi-pane wiring but the main window doesn't call it with
-    n>1 until stage 3 of the scaffold PR.
+    All four pane widgets are instantiated upfront and reused across
+    layout changes; :meth:`set_layout` toggles visibility and rebuilds
+    the inner splitter geometry but never destroys a pane, so each
+    pane's plotter, camera, and per-pane state (banner text, picked
+    cell, etc.) survives a layout switch. The View → Pane layout menu
+    drives the active layout.
     """
 
     pane_clicked = Signal(int)
