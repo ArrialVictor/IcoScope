@@ -35,15 +35,15 @@ def test_timeline_domain_resets_when_no_time_varying_panes(make_main_window):
     _set_field(win, 1, "tas_t")
 
     # Domain is populated as soon as a time-varying field is up.
-    assert win._timeline_strip._domain_t0 is not None
-    assert win._timeline_strip._domain_t1 is not None
+    assert win._timeline_strip.domain[0] is not None
+    assert win._timeline_strip.domain[1] is not None
 
     # Drop both panes to 'None' — strip hides + domain must reset.
     _set_field(win, 0, "None")
     _set_field(win, 1, "None")
 
-    assert win._timeline_strip._domain_t0 is None
-    assert win._timeline_strip._domain_t1 is None
+    assert win._timeline_strip.domain[0] is None
+    assert win._timeline_strip.domain[1] is None
     assert not win._timeline_strip.isVisible()
 
 

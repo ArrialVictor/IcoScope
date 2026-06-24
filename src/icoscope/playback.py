@@ -123,7 +123,7 @@ class Playback:
         w = self._window
         state = w._file_state
         strip = w._timeline_strip
-        t0, t1 = strip._domain_t0, strip._domain_t1
+        t0, t1 = strip.domain
         if t0 is None or t1 is None:
             # No time-varying field visible — nothing to play.
             self._stop_and_uncheck()
