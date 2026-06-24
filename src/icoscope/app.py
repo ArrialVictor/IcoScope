@@ -117,11 +117,13 @@ class _TabState:
     panes: list = field(default_factory=lambda: [PaneState()])
 
     # ── back-compat aliases for the per-pane fields ──────────────────────
-    # Existing `state.color_by = ...` style accesses transparently read/write
-    # the first pane. The multi-pane scaffold (later in this PR series) will
-    # migrate explicit call sites to ``state.panes[i].X`` where the selected
-    # pane index matters; these aliases keep single-pane behaviour intact
-    # during the staged refactor.
+    # Read/write through to ``panes[0]`` only. **Deprecated** — they silently
+    # produce wrong-pane behaviour in multi-pane mode (e.g. theme writes
+    # only updating pane 0's cmap, picker units lookup reading pane 0's
+    # field instead of the picked pane's). The remaining call sites in
+    # ``_activate_file_view`` operate on the active pane during file open,
+    # which is pane 0 by construction, so they're safe for now; a future
+    # cleanup should migrate them and drop these properties entirely.
     @property
     def color_by(self) -> str: return self.panes[0].color_by
     @color_by.setter
@@ -252,7 +254,8 @@ class MainWindow(QMainWindow):
         self._lonlat_state = _TabState()
         self._file_state = _TabState()
         for state in (self._ico_state, self._lonlat_state, self._file_state):
-            state.cmap = default_cmap
+            for pane in state.panes:
+                pane.cmap = default_cmap
 
         # central layout: a horizontal splitter so the user can drag the
         # divider between the 3-D view(s) and the control panel. Index 0
@@ -945,9 +948,9 @@ class MainWindow(QMainWindow):
         self._set_lonlat(None, None)
 
     def _current_color_by_units(self) -> str:
-        """Units string for the active field — '' if unknown."""
+        """Units string for the active pane's field — '' if unknown."""
         from .display_block import SYNTHETIC_UNITS
-        name = self.state.color_by
+        name = self.pane_state.color_by
         if name == "None":
             return ""
         # File-tab fields have units in their FieldMeta; synthetic schemes use
@@ -976,7 +979,7 @@ class MainWindow(QMainWindow):
         can re-display after time / level scrubs.
         """
         if (cell_idx is None or self.scalars is None
-                or self.state.color_by == "None"):
+                or self.pane_state.color_by == "None"):
             self.value_label.setText("")
             self.value_label.setToolTip("")
             self.value_label.setVisible(False)
@@ -1337,7 +1340,11 @@ class MainWindow(QMainWindow):
             (self._file_state, self.panel.file_tab),
             (self._lonlat_state, self.panel.lonlat_tab),
         ):
-            tab_state.cmap = suggested
+            # Write to every pane so a theme change in multi-pane layout
+            # updates pane 2/3/4's cmap too — the back-compat property
+            # would only touch pane 0.
+            for pane in tab_state.panes:
+                pane.cmap = suggested
             if tab_widget is not None:
                 tab_widget.set_cmap(suggested)
         self._sync_color_buttons()
@@ -1822,12 +1829,14 @@ class MainWindow(QMainWindow):
         self.file_path = path
         self._file_state.file_fields = fields
         self._file_state.file_levels = levels
-        # Fresh file: reset selections so _activate_file_view's "preserve
-        # prior choice" path doesn't carry over a field/index from the
-        # previous file that may not exist or may be out-of-range here.
-        self._file_state.color_by = "None"
-        self._file_state.time_index = 0
-        self._file_state.level_index = 0
+        # Fresh file: reset selections on every pane (not just pane 0) so
+        # _activate_file_view's "preserve prior choice" path doesn't carry
+        # over a field/index from the previous file, and so hidden panes
+        # don't surface a stale field name when the layout is re-expanded.
+        for pane in self._file_state.panes:
+            pane.color_by = "None"
+            pane.time_index = 0
+            pane.level_index = 0
         # Clim cache + symmetric dict are keyed by field name; if the
         # new file happens to share a name with the previous file (e.g.
         # 'tas' in both), the cached (min, max) from the previous file
@@ -1899,7 +1908,8 @@ class MainWindow(QMainWindow):
         # File tab's Color by only ever lists file fields, never synthetic
         # options — on unload, just "None" remains.
         self.panel.file_tab.set_color_by_items(["None"])
-        self._file_state.color_by = "None"
+        for pane in self._file_state.panes:
+            pane.color_by = "None"
         self.panel.file_tab.set_color_by("None")
         # color_by = "None" → grey out cmap/colorbar/center-zero, matching
         # the initial state. set_color_by blocks signals so _on_color_by
