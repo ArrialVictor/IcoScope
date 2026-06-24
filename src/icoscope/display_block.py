@@ -95,6 +95,7 @@ class _DisplayBlock(QWidget):
     time_changed        = Signal(int)
     play_toggled        = Signal(bool)
     play_speed_changed  = Signal(int)
+    loop_toggled        = Signal(bool)
 
     # Vertical level (only emitted if with_time=True; gated by current field)
     level_changed       = Signal(int)
@@ -308,6 +309,17 @@ class _DisplayBlock(QWidget):
         self.speed_box.setKeyboardTracking(False)
         self.speed_box.valueChanged.connect(self.play_speed_changed)
         srow.addWidget(self.speed_box, stretch=1)
+        # Loop checkbox sits next to Step — both belong to "what does play do".
+        # Default ON so users get the existing wrap-to-zero behaviour without
+        # any setting change; un-tick to make playback stop at the last frame.
+        self.loop_cb = QCheckBox("Loop")
+        self.loop_cb.setChecked(True)
+        self.loop_cb.setToolTip(
+            "When checked, playback wraps back to the start at the end of "
+            "the time axis. When unchecked, playback stops at the last frame."
+        )
+        self.loop_cb.toggled.connect(self.loop_toggled)
+        srow.addWidget(self.loop_cb)
         al.addWidget(self.speed_row)
         self.speed_row.setVisible(False)
 
