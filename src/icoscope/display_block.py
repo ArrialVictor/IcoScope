@@ -273,13 +273,16 @@ class _DisplayBlock(QWidget):
         self.play_btn.setCheckable(True)
         self.play_btn.toggled.connect(self._on_play_toggled)
         trow_top.addWidget(self.play_btn)
-        # The File-tab pane block delegates playback to the bottom
-        # timeline strip's PlaybackBar (which has play/speed/loop as one
-        # group). Hide the per-pane play button to avoid two controls
-        # racing for the same playback state. The Ico/LonLat combined
-        # blocks keep the inline play button — they have no strip.
+        # The File-tab pane block delegates the entire time row (play
+        # button + slider + datetime label) to the bottom timeline strip
+        # — its per-track scrubbing + PlaybackBar replace the redundant
+        # per-pane slider. Hide the row wholesale in pane mode; the
+        # Ico/LonLat combined blocks keep it (they have no strip).
         if self.mode == "pane":
             self.play_btn.setVisible(False)
+            self._pane_mode_hides_time_row = True
+        else:
+            self._pane_mode_hides_time_row = False
         self.time_slider = QSlider(Qt.Horizontal)
         self.time_slider.setRange(0, 0)
         self.time_slider.setFixedHeight(ROW_H)
@@ -422,7 +425,9 @@ class _DisplayBlock(QWidget):
         if n_steps and n_steps > 1:
             self._n_time = n_steps
             self._times = times
-            self.time_row.setVisible(True)
+            # Time row (play + slider + datetime label) is on the strip
+            # in pane mode — keep it hidden in the side panel there.
+            self.time_row.setVisible(not self._pane_mode_hides_time_row)
             # speed_row hosts Step + Loop which moved to the timeline
             # strip's PlaybackBar in pane mode — keep it hidden there.
             self.speed_row.setVisible(not self._pane_mode_hides_speed_row)

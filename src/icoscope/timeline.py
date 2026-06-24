@@ -125,6 +125,15 @@ class PlaybackBar(QWidget):
 
         layout.addStretch(1)
 
+        # Cursor datetime label at the right edge — what was the side-
+        # panel's "datetime under the time slider" before that slider
+        # was retired. Anchored to the cursor visually since the strip's
+        # cursor line is at whatever datetime this label names.
+        self.cursor_label = QLabel("—")
+        self.cursor_label.setAlignment(Qt.AlignVCenter | Qt.AlignRight)
+        self.cursor_label.setStyleSheet("color: #888; font-size: 11px;")
+        layout.addWidget(self.cursor_label)
+
     def _on_play_toggled(self, on: bool) -> None:
         self.play_btn.setText("⏸" if on else "▶")
         self.play_toggled.emit(on)
@@ -132,6 +141,10 @@ class PlaybackBar(QWidget):
     def _emit_speed(self) -> None:
         self.speed_changed.emit(
             self.speed_box.value(), self.unit_combo.currentText())
+
+    def set_cursor_label(self, text: str) -> None:
+        """Update the right-hand cursor datetime label (empty string → ``—``)."""
+        self.cursor_label.setText(text or "—")
 
     def set_playing(self, playing: bool) -> None:
         """Push the play-button state from outside (e.g. end-of-playback stop)."""

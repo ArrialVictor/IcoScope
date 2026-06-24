@@ -2077,6 +2077,12 @@ class MainWindow(QMainWindow):
             else:
                 cursors.append(master)
         self._timeline_strip.set_cursors(cursors)
+        # Right-edge cursor datetime label on the strip — replaces the
+        # side panel's "datetime under the time slider" that retired
+        # along with the time row in pane mode.
+        from .formatters import short_datetime
+        text = short_datetime(master) if master is not None else ""
+        self._timeline_strip.playback_bar.set_cursor_label(text)
 
     def _on_level_changed(self, idx):
         if idx == self.pane_state.level_index:
