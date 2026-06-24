@@ -1924,7 +1924,7 @@ class MainWindow(QMainWindow):
             slider.setValue(self.state.panes[active].time_index)
             slider.blockSignals(False)
             self.panel.file_tab.set_time_label(slider.value())
-        self._timeline_strip.set_cursor(cursor)
+        self._refresh_timeline_cursors()
         # Each pane's scalar field now corresponds to a different time
         # slice — re-render the per-track value column from _last_pick.
         self._refresh_timeline_pane_values()
@@ -1936,6 +1936,10 @@ class MainWindow(QMainWindow):
         pane = self.state.panes[pane_idx]
         pane.time_locked = not pane.time_locked
         self._timeline_strip.set_pane_locked(pane_idx, pane.time_locked)
+        # Just-locked: the track cursor pins at the pane's frozen time.
+        # Just-unlocked: it jumps to the master cursor. Either way, the
+        # per-track cursor positions need a refresh.
+        self._refresh_timeline_cursors()
 
     def _refresh_timeline_pane_values(self) -> None:
         """Populate each track's value column from ``_last_pick``.
@@ -2005,13 +2009,37 @@ class MainWindow(QMainWindow):
             self._timeline_strip.set_panes([])
             return
         self._timeline_strip.set_panes(tracks)
-        self._timeline_strip.set_cursor(self._file_state.time_cursor)
         # Rebuilding tracks resets their lock visuals — push the persisted
         # per-pane state back so a layout change doesn't silently unlock.
         for i in range(self._pane_container.n_visible):
             self._timeline_strip.set_pane_locked(
                 i, self.state.panes[i].time_locked)
+        self._refresh_timeline_cursors()
         self._refresh_timeline_pane_values()
+
+    def _refresh_timeline_cursors(self) -> None:
+        """Push per-track cursor positions to the strip.
+
+        Locked panes keep their cursor pinned at the datetime
+        corresponding to their frozen ``time_index``; unlocked panes
+        follow the master cursor. Computing per-track lets a locked
+        track's bar stay where the data actually is, instead of
+        drifting with the master cursor that the pane is ignoring.
+        """
+        master = self._file_state.time_cursor
+        cursors: list = []
+        for i in range(self._pane_container.n_visible):
+            pane = self.state.panes[i]
+            if pane.time_locked:
+                meta = self._file_state.file_fields.get(pane.color_by)
+                times = self._times_for(meta) if meta else None
+                if times is not None and pane.time_index < len(times):
+                    cursors.append(times[pane.time_index])
+                else:
+                    cursors.append(None)
+            else:
+                cursors.append(master)
+        self._timeline_strip.set_cursors(cursors)
 
     def _on_level_changed(self, idx):
         if idx == self.pane_state.level_index:

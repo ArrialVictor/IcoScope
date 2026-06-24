@@ -103,6 +103,56 @@ def test_lock_state_persists_across_layout_refresh(make_main_window):
         "lock visual must survive a strip rebuild"
 
 
+def test_locked_track_cursor_stays_at_pinned_time(make_main_window):
+    """The cursor bar on a locked track must not follow the master cursor.
+
+    Regression: previously the strip pushed one shared cursor to every
+    track, so a locked pane's data stayed pinned but its cursor bar
+    drifted with the master — confusingly out of sync with the data.
+    """
+    win = make_main_window()
+    _setup_two_panes(win)
+    win._select_pane(0)
+    QCoreApplication.processEvents()
+
+    # Lock pane 2 at its initial time_index (=0).
+    win._on_timeline_lock_toggled(1)
+    QCoreApplication.processEvents()
+    pinned = win._times_for(win._file_state.file_fields["tas_daily"])[0]
+
+    # Drag the master cursor to sample #5 of pane 1's monthly axis.
+    times = win._times_for(win._file_state.file_fields["tas_t"])
+    win._timeline_strip.cursor_changed.emit(times[5])
+    QCoreApplication.processEvents()
+
+    pane1_track = win._timeline_strip._tracks[0]
+    pane2_track = win._timeline_strip._tracks[1]
+    assert pane1_track._cursor_t == times[5], \
+        "unlocked track cursor must follow the master"
+    assert pane2_track._cursor_t == pinned, \
+        "locked track cursor must stay at the pinned datetime"
+
+
+def test_unlocking_jumps_track_cursor_to_master(make_main_window):
+    """Unlocking a previously-locked track snaps it back to the master cursor."""
+    win = make_main_window()
+    _setup_two_panes(win)
+    win._select_pane(0)
+    QCoreApplication.processEvents()
+
+    win._on_timeline_lock_toggled(1)
+    QCoreApplication.processEvents()
+    times = win._times_for(win._file_state.file_fields["tas_t"])
+    win._timeline_strip.cursor_changed.emit(times[3])
+    QCoreApplication.processEvents()
+    assert win._timeline_strip._tracks[1]._cursor_t != times[3]
+
+    win._on_timeline_lock_toggled(1)         # unlock
+    QCoreApplication.processEvents()
+    assert win._timeline_strip._tracks[1]._cursor_t == times[3], \
+        "unlocking must snap the track cursor back to the master"
+
+
 def test_cursor_clears_value_column(make_main_window):
     """Empty-click / Escape clears the pick → value column hides."""
     win = make_main_window()

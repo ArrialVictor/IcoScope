@@ -29,7 +29,7 @@ from qtpy.QtWidgets import QPushButton, QSizePolicy, QVBoxLayout, QWidget
 TRACK_HEIGHT = 28
 # Track region widths, left to right:
 #   [lock button] [label] [plot area with dots + cursor] [value text]
-LOCK_WIDTH = 32       # toggle button on the very left
+LOCK_WIDTH = 72       # toggle button on the very left — fits "Unlock" text
 LABEL_WIDTH = 96      # field-name label (clickable → select pane)
 VALUE_WIDTH = 96      # right-hand current-pick value
 HORIZONTAL_PADDING = 12
@@ -83,12 +83,10 @@ class Track(QWidget):
         self.setFixedHeight(TRACK_HEIGHT)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.setMouseTracking(False)
-        # Lock as a real QPushButton — gives it a visible frame so the
-        # click affordance is clear, and Qt renders the emoji at a
-        # readable button-sized scale (the previous painted glyph at
-        # 22px was hard to read). Checkable so the visual state of the
-        # button tracks the lock state without us needing a stylesheet.
-        self._lock_btn = QPushButton("🔓", self)
+        # Lock as a real QPushButton with imperative text ("Lock" when
+        # unlocked = "click to lock"; "Unlock" when locked = "click to
+        # unlock"). Emojis didn't render legibly at this size.
+        self._lock_btn = QPushButton("Lock", self)
         self._lock_btn.setCheckable(True)
         self._lock_btn.setFixedSize(LOCK_WIDTH - 4, TRACK_HEIGHT - 6)
         self._lock_btn.move(2, 3)
@@ -133,7 +131,7 @@ class Track(QWidget):
         self._locked = bool(locked)
         self._lock_btn.blockSignals(True)
         self._lock_btn.setChecked(self._locked)
-        self._lock_btn.setText("🔒" if self._locked else "🔓")
+        self._lock_btn.setText("Unlock" if self._locked else "Lock")
         self._lock_btn.blockSignals(False)
         self.update()
 
@@ -355,9 +353,16 @@ class TimelineStrip(QWidget):
         )
         self.setVisible(True)
 
-    def set_cursor(self, t) -> None:
-        """Move the shared cursor on every track to datetime ``t``."""
-        for track in self._tracks:
+    def set_cursors(self, cursors: Sequence) -> None:
+        """Set each track's cursor independently.
+
+        Locked panes keep their cursor at their pinned datetime
+        regardless of the master cursor's position, so the cursor bar
+        on a locked track stays where the data is — not where the
+        master cursor moved to. Length mismatch is silently clamped
+        to the shorter.
+        """
+        for track, t in zip(self._tracks, cursors, strict=False):
             track.set_cursor(t)
 
     def set_pane_values(self, values: Sequence[str]) -> None:
