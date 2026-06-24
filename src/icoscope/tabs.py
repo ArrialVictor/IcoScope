@@ -118,19 +118,20 @@ _DISPLAY_SIGNALS_TIME = ("time_changed", "play_toggled", "play_speed_changed",
                          "level_changed")
 
 # Signal subsets used by FileTab's mode-split blocks (Global vs Pane).
-# Coloring + per-pane animation widgets live on the pane block; overlays /
-# autorotate / playback speed / export live on the global block.
+# Coloring + per-pane animation widgets (including the play-speed step
+# spinbox — it's built inside the with_time branch of the animation group,
+# which only runs for the pane block) live on the pane block; overlays /
+# autorotate / export live on the global block.
 _DISPLAY_SIGNALS_PANE = (
     "color_by_changed", "cmap_changed", "colorbar_toggled", "center_zero_toggled",
     "cbar_color_changed",
-    "time_changed", "play_toggled", "level_changed",
+    "time_changed", "play_toggled", "play_speed_changed", "level_changed",
 )
 _DISPLAY_SIGNALS_GLOBAL = (
     "coastlines_toggled", "graticule_toggled", "edges_toggled",
     "coast_color_changed", "grat_color_changed", "edge_color_changed",
     "coast_width_changed", "grat_width_changed", "edge_width_changed",
     "autorotate_toggled", "sync_cameras_toggled",
-    "play_speed_changed",
     "export_clicked",
 )
 
