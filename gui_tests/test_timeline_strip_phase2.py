@@ -33,13 +33,13 @@ def test_pick_populates_value_column_on_every_track(make_main_window):
     QCoreApplication.processEvents()
 
     # Empty until first pick.
-    for track in win._timeline_strip._tracks:
+    for track in win._timeline_strip.tracks:
         assert track.value_text == ""
 
     win._on_pane_pick(0, cell, lon=0.0, lat=0.0)
     QCoreApplication.processEvents()
 
-    tracks = win._timeline_strip._tracks
+    tracks = win._timeline_strip.tracks
     assert tracks[0].value_text, "pane 1 track value must populate on pick"
     assert tracks[1].value_text, "pane 2 track value must populate on pick"
     # Both fields are temperature-ish (~280-310 K) → both labels should
@@ -92,14 +92,14 @@ def test_lock_state_persists_across_layout_refresh(make_main_window):
     _setup_two_panes(win)
     win._on_timeline_lock_toggled(1)
     QCoreApplication.processEvents()
-    assert win._timeline_strip._tracks[1].locked is True
+    assert win._timeline_strip.tracks[1].locked is True
 
     # Force a rebuild by changing pane 1's color_by — _refresh_timeline_strip
     # runs and re-creates the tracks if pane count changed (it didn't, but
     # the lock-restore loop runs unconditionally).
     _set_field(win, 0, "tas_t")
     QCoreApplication.processEvents()
-    assert win._timeline_strip._tracks[1].locked is True, \
+    assert win._timeline_strip.tracks[1].locked is True, \
         "lock visual must survive a strip rebuild"
 
 
@@ -125,11 +125,11 @@ def test_locked_track_cursor_stays_at_pinned_time(make_main_window):
     win._timeline_strip.cursor_changed.emit(times[5])
     QCoreApplication.processEvents()
 
-    pane1_track = win._timeline_strip._tracks[0]
-    pane2_track = win._timeline_strip._tracks[1]
-    assert pane1_track._cursor_t == times[5], \
+    pane1_track = win._timeline_strip.tracks[0]
+    pane2_track = win._timeline_strip.tracks[1]
+    assert pane1_track.cursor == times[5], \
         "unlocked track cursor must follow the master"
-    assert pane2_track._cursor_t == pinned, \
+    assert pane2_track.cursor == pinned, \
         "locked track cursor must stay at the pinned datetime"
 
 
@@ -148,13 +148,13 @@ def test_unlocking_jumps_track_cursor_and_data_to_master(make_main_window):
     win._timeline_strip.cursor_changed.emit(times[1])
     QCoreApplication.processEvents()
     assert win.state.panes[1].time_index == 0, "locked pane stays at 0"
-    assert win._timeline_strip._tracks[1]._cursor_t != times[1]
+    assert win._timeline_strip.tracks[1].cursor != times[1]
 
     win._on_timeline_lock_toggled(1)         # unlock
     QCoreApplication.processEvents()
     assert win.state.panes[1].time_index == 30, \
         "unlocking must propagate the master cursor to time_index"
-    assert win._timeline_strip._tracks[1]._cursor_t == times[1], \
+    assert win._timeline_strip.tracks[1].cursor == times[1], \
         "unlocking must snap the track cursor back to the master"
 
 
@@ -166,11 +166,11 @@ def test_cursor_clears_value_column(make_main_window):
     QCoreApplication.processEvents()
     win._on_pane_pick(0, cell, lon=0.0, lat=0.0)
     QCoreApplication.processEvents()
-    assert win._timeline_strip._tracks[0].value_text != ""
+    assert win._timeline_strip.tracks[0].value_text != ""
 
     # Escape drops the pick + clears every track's value column.
     win._on_escape()
     QCoreApplication.processEvents()
-    for track in win._timeline_strip._tracks:
+    for track in win._timeline_strip.tracks:
         assert track.value_text == "", \
             "Escape must clear per-track value columns too"

@@ -760,7 +760,11 @@ class MainWindow(QMainWindow):
                     "label_font_size": 10,
                     "fmt": "%.3g",
                     "title": bar_title}
-        bar_config = (bar_on, pane.cmap, tuple(clim_val) if clim_val else None,
+        # Include color_by in the cache key — without it, two fields that
+        # happen to share (cmap, clim, title) could reuse a cached scalar-
+        # bar actor whose tick labels still reflect the previous field.
+        bar_config = (bar_on, pane.color_by, pane.cmap,
+                      tuple(clim_val) if clim_val else None,
                       cbar_color, bar_title)
         cache = getattr(self, "_last_bar_config", None)
         if cache is None:
@@ -1845,6 +1849,10 @@ class MainWindow(QMainWindow):
         self._file_state.time_cursor = None
         self._file_state.clim_cache = {}
         self._file_state.clim_symmetric = {}
+        # Per-pane scalar-bar config cache is keyed by (color_by, cmap,
+        # clim, …) — none of which is meaningful across a file boundary;
+        # drop it so the new file builds fresh actors.
+        self._last_bar_config = {}
         self._file_cache = {
             "path": path,
             "verts": verts,
@@ -1900,6 +1908,7 @@ class MainWindow(QMainWindow):
         # is loaded next.
         self._file_state.clim_cache = {}
         self._file_state.clim_symmetric = {}
+        self._last_bar_config = {}
         self._file_cache = None
         # Hide any stale banners — the file they referenced is gone.
         for i in range(self._pane_container.MAX_PANES):
@@ -2062,9 +2071,13 @@ class MainWindow(QMainWindow):
         # rings even with smooth_shading on. Icosphere has no pole singularity
         # and no axis-aligned strips, so the surface reads as a clean sphere.
         sphere = pv.Icosphere(radius=1.0, nsub=5)
+        # Clear every pane's plotter — including hidden panes — so a layout
+        # shrink before close doesn't leave the prior file's mesh actors
+        # sitting on hidden panes' plotters until garbage collection.
+        for idx in range(PaneContainer.MAX_PANES):
+            self._pane_container.pane(idx).plotter.clear()
         for idx in range(self._pane_container.n_visible):
             plotter = self._pane_container.pane(idx).plotter
-            plotter.clear()
             plotter.set_background(bg)
             plotter.add_mesh(sphere, name="empty",
                              color="#777777", show_edges=False,

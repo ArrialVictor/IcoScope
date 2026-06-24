@@ -273,6 +273,21 @@ class Track(QWidget):
         """Current value-column text (for tests)."""
         return self._value_text
 
+    @property
+    def label(self) -> str:
+        """Left-hand label text."""
+        return self._label
+
+    @property
+    def cursor(self):
+        """Current per-track cursor datetime (or None if unset)."""
+        return self._cursor_t
+
+    @property
+    def samples(self) -> list:
+        """Sample datetimes drawn as dots on this track (a copy)."""
+        return list(self._times)
+
     def _plot_x0(self) -> int:
         """Left edge of the plot area in widget pixels."""
         return LOCK_WIDTH + LABEL_WIDTH + HORIZONTAL_PADDING
@@ -512,6 +527,16 @@ class TimelineStrip(QWidget):
         """Update the lock icon on track ``pane_idx``."""
         if 0 <= pane_idx < len(self._tracks):
             self._tracks[pane_idx].set_locked(locked)
+
+    @property
+    def domain(self) -> tuple:
+        """Strip's shared datetime range as ``(t0, t1)`` (or ``(None, None)``)."""
+        return (self._domain_t0, self._domain_t1)
+
+    @property
+    def tracks(self) -> tuple:
+        """Per-pane :class:`Track` widgets in pane-index order (read-only view)."""
+        return tuple(self._tracks)
 
     def _on_track_clicked(self, frac: float) -> None:
         """Convert a track-fraction back to a datetime and emit upward."""
