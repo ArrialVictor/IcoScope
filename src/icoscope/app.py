@@ -759,7 +759,6 @@ class MainWindow(QMainWindow):
         st = self.state                          # tab-shared (overlays, theme)
         pane = self.state.panes[pane_idx]        # per-pane (cmap, etc.)
         has_scalars = self._pane_scalars[pane_idx] is not None
-        scalar_key = self._pane_scalar_key(pane_idx) if has_scalars else None
 
         # Scalar-bar create-vs-update decision. PyVista honours
         # ``scalar_bar_args`` only on first creation of a bar with a
@@ -773,7 +772,7 @@ class MainWindow(QMainWindow):
         # remove → empty → re-add flicker that's purely visual noise.
         # Cache the last config per pane and skip the recreate when it
         # matches.
-        clim_val = self._clim(pane_idx)
+        clim_val = self._clim(pane_idx) if has_scalars else None
         bar_on = pane.colorbar_on and has_scalars
         cbar_color = self._cbar_color(pane_idx)
         bar_title = f"Pane {pane_idx + 1}"
@@ -801,11 +800,8 @@ class MainWindow(QMainWindow):
             with contextlib.suppress(KeyError, IndexError, StopIteration):
                 plotter.remove_scalar_bar()
 
-        plotter.add_mesh(
-            self._mesh, name="grid",
-            scalars=scalar_key,
-            cmap=pane.cmap,
-            clim=clim_val,
+        # Shared kwargs across the two add_mesh paths below.
+        common_kwargs = dict(
             show_edges=st.edges_on,
             edge_color=self._edge_color(),
             line_width=st.edge_width,
@@ -817,17 +813,39 @@ class MainWindow(QMainWindow):
             # noticeably different brightness, which is misleading for
             # scientific viz where the colourmap is the message.
             lighting=False,
-            show_scalar_bar=bar_on,
-            # Always pass args when the bar is on. PyVista honours them
-            # only on bar creation — if the bar exists this is a no-op,
-            # but ``add_mesh`` internally tears down + recreates linked
-            # scalar bars in some versions, so we have to be ready to
-            # re-supply the styling (otherwise the recreated bar uses
-            # PyVista's defaults — notably black text instead of the
-            # user-chosen colour).
-            scalar_bar_args=bar_args if bar_on else None,
             reset_camera=False,
         )
+        if has_scalars:
+            plotter.add_mesh(
+                self._mesh, name="grid",
+                scalars=self._pane_scalar_key(pane_idx),
+                cmap=pane.cmap,
+                clim=clim_val,
+                show_scalar_bar=bar_on,
+                # Always pass args when the bar is on. PyVista honours them
+                # only on bar creation — if the bar exists this is a no-op,
+                # but ``add_mesh`` internally tears down + recreates linked
+                # scalar bars in some versions, so we have to be ready to
+                # re-supply the styling (otherwise the recreated bar uses
+                # PyVista's defaults — notably black text instead of the
+                # user-chosen colour).
+                scalar_bar_args=bar_args if bar_on else None,
+                **common_kwargs,
+            )
+        else:
+            # No field selected → render as a neutral solid sphere instead
+            # of letting add_mesh fall back to the mesh's active scalars
+            # (which would be whichever pane added them last — silently
+            # making this pane show another pane's data) or to PyVista's
+            # default colour. Same gray as ``_render_empty_sphere`` so a
+            # no-field pane in multi-pane mode reads the same as the
+            # no-file empty sphere.
+            plotter.add_mesh(
+                self._mesh, name="grid",
+                color="#777777",
+                show_scalar_bar=False,
+                **common_kwargs,
+            )
         cache[pane_idx] = bar_config
 
         if st.coastlines_on:

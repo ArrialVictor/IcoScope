@@ -348,7 +348,10 @@ class _DisplayBlock(QWidget):
         self.level_slider.valueChanged.connect(self._on_level_slider_changed)
         lrow.addWidget(self.level_slider, stretch=1)
         self.level_value_label = QLabel("—")
-        self.level_value_label.setFixedSize(60, ROW_H)
+        # Width sized for 4-digit hPa values ("1024.0 hPa" is the widest
+        # realistic case for tropospheric pressure). 60 px clipped the
+        # number; 80 fits comfortably with the suffix.
+        self.level_value_label.setFixedSize(80, ROW_H)
         self.level_value_label.setAlignment(Qt.AlignVCenter | Qt.AlignRight)
         lrow.addWidget(self.level_value_label)
         al.addWidget(self.level_row)
