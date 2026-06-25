@@ -90,10 +90,14 @@ def _build_main_window(synthetic_nc: Path):
     win = MainWindow(verts, cells, np.asarray(centers), initial_n=8)
 
     f_verts, f_cells, f_centers, fields = load_grid(str(synthetic_nc))
-    levels = read_levels(str(synthetic_nc))
+    levels_result = read_levels(str(synthetic_nc))
+    levels, level_units = (
+        levels_result if levels_result is not None else (None, "")
+    )
     win.file_path = str(synthetic_nc)
     win._file_state.file_fields = fields
     win._file_state.file_levels = levels
+    win._file_state.file_level_units = level_units
     win._file_cache = {
         "path": str(synthetic_nc),
         "verts": f_verts,
@@ -101,6 +105,7 @@ def _build_main_window(synthetic_nc: Path):
         "centers": np.asarray(f_centers),
         "fields": fields,
         "levels": levels,
+        "level_units": level_units,
         "context": FileContext(str(synthetic_nc)),
     }
     win.panel.file_tab.set_file_loaded(True)

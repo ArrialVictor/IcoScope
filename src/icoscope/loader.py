@@ -623,22 +623,35 @@ def read_times(path: str | Path, axis_name: str) -> np.ndarray | None:
         return _parse_times(ds, axis_name)
 
 
-def read_levels(path: str | Path) -> np.ndarray | None:
-    """Return the ``presnivs`` axis values (Pa) if present, else ``None``.
+def read_levels(path: str | Path) -> tuple[np.ndarray, str] | None:
+    """Return ``(values, units)`` for the ``presnivs`` axis, or ``None``.
 
-    Used by the GUI to label the vertical-level slider. If only the dimension
-    exists (no coord variable — possible when a file has been subsetted with
-    ``ncks``/``cdo`` and the coord var was dropped), returns ``np.arange(N)``
-    so the slider still works, labelled by integer index instead of pressure.
+    Used by the GUI to label and convert the vertical-level slider.
+
+    ``units`` is the raw value of the coord variable's ``units`` attribute
+    (e.g. ``"Pa"`` for LMDZ, ``"hPa"`` for some processed files, ``"m"``
+    for geometric-height coordinates, ``""`` when the attribute is
+    missing or the variable doesn't exist). The display layer decides
+    how to format the slider label from this string — the loader
+    deliberately does no conversion so the GUI can render labels in the
+    file's native units.
+
+    If only the dimension exists (no coord variable — possible when a
+    file has been subsetted with ``ncks``/``cdo`` and the coord var was
+    dropped), returns ``(np.arange(N), "")`` so the slider still works,
+    labelled by integer index instead of a physical value.
+
     Returns ``None`` only when there is no vertical dim at all.
     """
     from netCDF4 import Dataset
 
     with Dataset(path) as ds:
         if LEVEL_DIM in ds.variables:
-            return np.asarray(ds.variables[LEVEL_DIM][:], dtype=float)
+            var = ds.variables[LEVEL_DIM]
+            units = str(getattr(var, "units", "")).strip()
+            return np.asarray(var[:], dtype=float), units
         if LEVEL_DIM in ds.dimensions:
-            return np.arange(len(ds.dimensions[LEVEL_DIM]), dtype=float)
+            return np.arange(len(ds.dimensions[LEVEL_DIM]), dtype=float), ""
         return None
 
 

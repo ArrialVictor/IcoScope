@@ -90,8 +90,13 @@ class _TabState:
     grat_width: float = 0.6
     # file-only fields
     file_fields: dict = field(default_factory=dict)
-    # presnivs (Pa) for the loaded file, or None if no vertical dim
+    # presnivs values for the loaded file, in the file's native units, or
+    # None if no vertical dim. The accompanying ``file_level_units`` is
+    # the variable's ``units`` attribute as a plain string (e.g. ``"Pa"``,
+    # ``"hPa"``, ``"m"``, or ``""`` when missing); the display formats
+    # the slider label from both together.
     file_levels: object = None
+    file_level_units: str = ""
     # Master datetime cursor shared across panes. When a slider scrub
     # happens in any pane it sets this; every other pane resolves the
     # cursor to its own time axis's nearest sample so files with multiple
@@ -1337,12 +1342,12 @@ class MainWindow(QMainWindow):
             ft.set_time_axis(0)
         if meta and meta.get("n_levels", 0) > 1 and self._file_state.file_levels is not None:
             n_l = meta["n_levels"]
-            ft.set_levels(self._file_state.file_levels)
-            slider = block.level_slider
-            slider.blockSignals(True)
-            slider.setValue(min(max(pane.level_index, 0), n_l - 1))
-            slider.blockSignals(False)
-            ft.set_level_label(slider.value())
+            ft.set_levels(self._file_state.file_levels,
+                          self._file_state.file_level_units)
+            # set_level_label is the single source of truth for "go to
+            # this index" — moves the indicator marker, refreshes the
+            # caption, and pushes the value into the spinbox.
+            ft.set_level_label(min(max(pane.level_index, 0), n_l - 1))
         else:
             # No vertical dim — same logic as the time row above.
             ft.set_levels(None)
@@ -1567,7 +1572,10 @@ class MainWindow(QMainWindow):
             self._update_pane_banner(self._active_pane_idx)
             n_levels = meta.get("n_levels", 0) if meta else 0
             if n_levels > 1 and self._file_state.file_levels is not None:
-                self.panel.file_tab.set_levels(self._file_state.file_levels)
+                self.panel.file_tab.set_levels(
+                    self._file_state.file_levels,
+                    self._file_state.file_level_units,
+                )
             else:
                 self.panel.file_tab.set_levels(None)
             self.pane_state.level_index = 0
@@ -1988,11 +1996,15 @@ class MainWindow(QMainWindow):
         """
         from .loader import FileContext, load_grid, read_levels
         verts, cells, centers, fields = load_grid(path)
-        levels = read_levels(path)
+        levels_result = read_levels(path)
+        levels, level_units = (
+            levels_result if levels_result is not None else (None, "")
+        )
         context = FileContext(path)
         self.file_path = path
         self._file_state.file_fields = fields
         self._file_state.file_levels = levels
+        self._file_state.file_level_units = level_units
         self._file_cache = {
             "path": path,
             "verts": verts,
@@ -2000,6 +2012,7 @@ class MainWindow(QMainWindow):
             "centers": np.asarray(centers),
             "fields": fields,
             "levels": levels,
+            "level_units": level_units,
             "context": context,
         }
         self.panel.file_tab.set_file_loaded(True)
@@ -2039,6 +2052,7 @@ class MainWindow(QMainWindow):
         self.file_path = None
         self._file_state.file_fields = {}
         self._file_state.file_levels = None
+        self._file_state.file_level_units = ""
         self._file_state.time_cursor = None
         # Clim cache holds per-field min/max keyed against this file's
         # variables; useless once the file is gone, and would silently
@@ -2079,6 +2093,7 @@ class MainWindow(QMainWindow):
         assert c is not None
         self.verts, self.cells, self.centers = c["verts"], c["cells"], c["centers"]
         self._file_state.file_levels = c.get("levels")
+        self._file_state.file_level_units = c.get("level_units", "")
         items = ["None"] + list(c["fields"].keys())
         self.panel.file_tab.set_color_by_items(items)
         # Preserve the previously selected field on re-entry (tab switch back).
@@ -2124,13 +2139,15 @@ class MainWindow(QMainWindow):
             self._file_state.time_index = 0
         if meta and meta.get("n_levels", 0) > 1 and self._file_state.file_levels is not None:
             n_l = meta["n_levels"]
-            self.panel.file_tab.set_levels(self._file_state.file_levels)
+            self.panel.file_tab.set_levels(
+                self._file_state.file_levels,
+                self._file_state.file_level_units,
+            )
             l_idx = min(max(self._file_state.level_index, 0), n_l - 1)
             self._file_state.level_index = l_idx
-            slider = self.panel.file_tab.display.level_slider
-            slider.blockSignals(True)
-            slider.setValue(l_idx)
-            slider.blockSignals(False)
+            # set_level_label updates the indicator + spinbox together
+            # (the QSlider was removed; set_level_label is the canonical
+            # "move to this level" entry point now).
             self.panel.file_tab.set_level_label(l_idx)
         else:
             self.panel.file_tab.set_levels(None)

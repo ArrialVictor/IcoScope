@@ -252,11 +252,31 @@ def test_read_field_xios_level_and_time_slice_4d():
 
 
 def test_read_levels_returns_presnivs():
+    """Levels are returned as (values, units) — units is the variable's attr."""
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "x.nc"
         _make_xios_nc(path, with_3d=True)
-        levels = read_levels(path)
-        np.testing.assert_array_equal(levels, [100000.0, 50000.0, 10000.0, 1000.0])
+        result = read_levels(path)
+        assert result is not None
+        values, units = result
+        np.testing.assert_array_equal(values, [100000.0, 50000.0, 10000.0, 1000.0])
+        # _make_xios_nc doesn't set a units attribute on presnivs.
+        assert units == ""
+
+
+def test_read_levels_picks_up_units_attribute():
+    """When presnivs has a ``units`` attribute, read_levels surfaces it."""
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "x.nc"
+        _make_xios_nc(path, with_3d=True)
+        with Dataset(path, "a") as ds:
+            ds.variables["presnivs"].units = "Pa"
+        result = read_levels(path)
+        assert result is not None
+        values, units = result
+        assert units == "Pa"
+        np.testing.assert_array_equal(
+            values, [100000.0, 50000.0, 10000.0, 1000.0])
 
 
 def test_read_levels_none_when_absent():
@@ -296,9 +316,12 @@ def test_read_levels_falls_back_to_indices_without_coord_var():
         with Dataset(path, "a") as ds:
             ds.createDimension("presnivs", 5)
             # Deliberately do NOT create a presnivs variable
-        levels = read_levels(path)
-        assert levels is not None
-        np.testing.assert_array_equal(levels, np.arange(5, dtype=float))
+        result = read_levels(path)
+        assert result is not None
+        values, units = result
+        # No coord variable → fall back to integer indices + empty units.
+        np.testing.assert_array_equal(values, np.arange(5, dtype=float))
+        assert units == ""
 
 
 def test_classify_var_returns_time_dim_name():
