@@ -836,7 +836,7 @@ class MainWindow(QMainWindow):
         plotter.render()
 
     # ── ESC: clear current selection + stop spin ──
-    def _on_escape(self):
+    def _on_escape(self) -> None:
         self._clear_pick_state(render=True)
         # Deselect any active multi-pane selection so the side panel can
         # swap back to Global mode (stage 6 wires that up).
@@ -1332,7 +1332,7 @@ class MainWindow(QMainWindow):
         if self._camera_sync_on and n_panes > prev_n:
             self._on_camera_modified(self._active_pane_idx)
 
-    def _on_theme(self, name):
+    def _on_theme(self, name: str) -> None:
         self.theme_name = name
         # Keep the menu's checkmark in sync (mutually-exclusive).
         _menubar.sync_theme_checkmarks(
@@ -1356,19 +1356,19 @@ class MainWindow(QMainWindow):
         self._build_scene()
         self._update_status()
 
-    def _on_cmap(self, name):
+    def _on_cmap(self, name: str) -> None:
         self.pane_state.cmap = name
         self._build_scene()
 
-    def _on_coast(self, on):
+    def _on_coast(self, on: bool) -> None:
         self.state.coastlines_on = on
         self._build_scene()
 
-    def _on_grat(self, on):
+    def _on_grat(self, on: bool) -> None:
         self.state.graticule_on = on
         self._build_scene()
 
-    def _on_edges(self, on):
+    def _on_edges(self, on: bool) -> None:
         self.state.edges_on = on
         self._build_scene()
 
@@ -1442,7 +1442,7 @@ class MainWindow(QMainWindow):
             arr = None
         self._pane_scalars[idx] = arr
 
-    def _on_color_by(self, name):
+    def _on_color_by(self, name: str) -> None:
         # The change targets the selected pane (or pane 0 on Ico/LonLat
         # where there's only ever one). Writing to self.pane_state (not
         # self.state) routes through the active pane — without this, multi-
@@ -1495,11 +1495,11 @@ class MainWindow(QMainWindow):
         self._refresh_timeline_strip()
         self._build_scene()
 
-    def _on_colorbar(self, on):
+    def _on_colorbar(self, on: bool) -> None:
         self.pane_state.colorbar_on = on
         self._build_scene()
 
-    def _on_center_zero(self, on):
+    def _on_center_zero(self, on: bool) -> None:
         """User toggled the per-pane 'Symmetric scale around 0' checkbox.
 
         Shared mode: ``_file_state.clim_symmetric[field]`` is the single
@@ -1554,31 +1554,31 @@ class MainWindow(QMainWindow):
                         self._file_state.clim_symmetric[pane.color_by]
         self._build_scene()
 
-    def _on_edge_color(self, hex_str):
+    def _on_edge_color(self, hex_str: str) -> None:
         self.state.edge_color_override = hex_str
         self._build_scene()
 
-    def _on_coast_color(self, hex_str):
+    def _on_coast_color(self, hex_str: str) -> None:
         self.state.coast_color_override = hex_str
         self._build_scene()
 
-    def _on_grat_color(self, hex_str):
+    def _on_grat_color(self, hex_str: str) -> None:
         self.state.grat_color_override = hex_str
         self._build_scene()
 
-    def _on_cbar_color(self, hex_str):
+    def _on_cbar_color(self, hex_str: str) -> None:
         self.pane_state.cbar_color_override = hex_str
         self._build_scene()
 
-    def _on_edge_width(self, w):
+    def _on_edge_width(self, w: float) -> None:
         self.state.edge_width = float(w)
         self._build_scene()
 
-    def _on_coast_width(self, w):
+    def _on_coast_width(self, w: float) -> None:
         self.state.coast_width = float(w)
         self._build_scene()
 
-    def _on_grat_width(self, w):
+    def _on_grat_width(self, w: float) -> None:
         self.state.grat_width = float(w)
         self._build_scene()
 
@@ -1675,17 +1675,17 @@ class MainWindow(QMainWindow):
         self._ico_cache = self._regen_mesh(
             self._ico_cache, self._ico_params_key(), build)
 
-    def _on_n(self, n):
+    def _on_n(self, n: int) -> None:
         self.n = n
         if self._is_ico_tab_active():
             self._regen_synthetic()
 
-    def _on_relax_iters(self, n):
+    def _on_relax_iters(self, n: int) -> None:
         self.max_relax_iters = n
         if self._is_ico_tab_active():
             self._regen_synthetic()
 
-    def _on_zoom(self, factor, lon, lat):
+    def _on_zoom(self, factor: float, lon: float, lat: float) -> None:
         self.zoom_factor = float(factor)
         self.zoom_lon = float(lon)
         self.zoom_lat = float(lat)
@@ -1725,12 +1725,12 @@ class MainWindow(QMainWindow):
         self._lonlat_cache = self._regen_mesh(
             self._lonlat_cache, self._lonlat_params_key(), build)
 
-    def _on_iim(self, val):
+    def _on_iim(self, val: int) -> None:
         self.iim = int(val)
         if self._is_lonlat_tab_active():
             self._regen_lonlat()
 
-    def _on_jjm(self, val):
+    def _on_jjm(self, val: int) -> None:
         self.jjm = int(val)
         if self._is_lonlat_tab_active():
             self._regen_lonlat()
@@ -1825,7 +1825,7 @@ class MainWindow(QMainWindow):
         )
         QTimer.singleShot(duration_ms, lambda: self._error_label.setText(""))
 
-    def _on_open_file(self):
+    def _on_open_file(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
             self, "Open NetCDF", "", "NetCDF (*.nc *.nc4 *.cdf);;All files (*)"
         )
@@ -1903,7 +1903,7 @@ class MainWindow(QMainWindow):
             attrs=attrs,
         )
 
-    def _on_close_file(self):
+    def _on_close_file(self) -> None:
         """Drop the loaded file. Stays on the File tab — shows the empty sphere."""
         if not self.file_path:
             return
@@ -2020,7 +2020,7 @@ class MainWindow(QMainWindow):
         self._apply_mesh_change()
         self._refresh_timeline_strip()
 
-    def _on_tab_changed(self, idx: int):
+    def _on_tab_changed(self, idx: int) -> None:
         """Tab is the active mesh source — swap the rendered scene accordingly."""
         # Tab switching has two ordering constraints that conflict:
         # (a) leaving a multi-pane File layout for Ico/LonLat: collapse to
@@ -2396,7 +2396,7 @@ class MainWindow(QMainWindow):
         # Same scalar-scrub optimisation as _on_time_changed.
         self._render_visible_panes()
 
-    def _on_play_toggled(self, on):
+    def _on_play_toggled(self, on: bool) -> None:
         self.playback.toggle_play(on)
 
     def _on_playback_speed_changed(self, value_ms: int, unit: str) -> None:
@@ -2404,14 +2404,14 @@ class MainWindow(QMainWindow):
         self._file_state.playback_speed_value = value_ms
         self._file_state.playback_speed_unit = unit
 
-    def _on_spin(self, on):
+    def _on_spin(self, on: bool) -> None:
         if on:
             self.playback.start_spin()
         else:
             self.playback.stop_spin()
         self.state.spin_on = on
 
-    def _on_export(self):
+    def _on_export(self) -> None:
         _export.save_export(
             self, self._pane_container, defaults=self._export_defaults,
         )
