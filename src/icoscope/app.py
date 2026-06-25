@@ -214,6 +214,18 @@ class MainWindow(QMainWindow):
         # see _their_ cameras change and would loop without it.
         self._camera_sync_on: bool = True
         self._syncing_cameras: bool = False
+        # Coalesce VTK ModifiedEvent bursts: a single user mouse move can
+        # fire several SetPosition/SetFocalPoint/SetViewUp events on the
+        # same camera, each of which would otherwise drive a full mirror +
+        # render of every other visible pane. Defer the mirror to the
+        # next Qt event-loop tick via QTimer.singleShot so consecutive
+        # events in the same iteration collapse to one mirror operation.
+        # ``None`` when no mirror is pending; otherwise the source pane
+        # idx. We use the static singleShot (not a persistent QTimer
+        # parented to self) so accumulated MainWindow instances in the
+        # GUI test suite don't leave timer objects holding strong
+        # references to bound methods through Qt's teardown.
+        self._camera_sync_pending_src: int | None = None
         # Shared colour range across all visible panes that display the
         # same field — keeps colour ↔ value mapping consistent for
         # cross-pane / cross-time / cross-level comparison. Tradeoff:
@@ -1053,16 +1065,49 @@ class MainWindow(QMainWindow):
 
     # ── slots ─────────────────────────────────────
     def _on_camera_modified(self, src_pane_idx: int) -> None:
-        """Mirror pane ``src_pane_idx``'s camera onto every other visible pane.
+        """Schedule a camera-sync mirror for the next Qt event-loop tick.
 
         Fired by VTK's ``ModifiedEvent`` on the source camera whenever it
-        changes (mouse rotate, pan, zoom, programmatic moves). Skips when:
+        changes (mouse rotate, pan, zoom, programmatic moves). A single
+        user mouse move can fire multiple ModifiedEvents (one each per
+        ``SetPosition`` / ``SetFocalPoint`` / ``SetViewUp`` inside VTK's
+        interactor); deferring lets them collapse into one
+        :meth:`_flush_camera_sync` per Qt iteration instead of one
+        full mirror + render-N-1-panes per event.
+
+        Skips when:
         - sync is OFF (each pane stays independent)
         - source pane is hidden (we only mirror across *visible* panes)
         - propagation is already in progress (re-entrancy guard — without
           this every mirrored camera fires its own ModifiedEvent and loops)
+
+        Programmatic callers (``_on_camera_sync``, ``_on_pane_layout``)
+        also use this path; the deferred mirror runs on the next
+        ``processEvents`` tick, which all current callers reach before
+        observing camera state.
         """
         if not self._camera_sync_on or self._syncing_cameras:
+            return
+        if src_pane_idx >= self._pane_container.n_visible:
+            return
+        # Only schedule a flush if one isn't already pending — bursts
+        # collapse to one mirror operation per Qt event-loop tick.
+        was_pending = self._camera_sync_pending_src is not None
+        self._camera_sync_pending_src = src_pane_idx
+        if not was_pending:
+            QTimer.singleShot(0, self._flush_camera_sync)
+
+    def _flush_camera_sync(self) -> None:
+        """Apply the pending camera-sync mirror onto every other visible pane.
+
+        Wakes up via the deferred timer scheduled by
+        :meth:`_on_camera_modified`. Re-checks the sync flag and source
+        visibility because state can change between the schedule and the
+        flush (e.g. user toggles sync OFF mid-drag).
+        """
+        src_pane_idx = self._camera_sync_pending_src
+        self._camera_sync_pending_src = None
+        if src_pane_idx is None or not self._camera_sync_on:
             return
         if src_pane_idx >= self._pane_container.n_visible:
             return
