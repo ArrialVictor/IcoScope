@@ -14,13 +14,7 @@ from __future__ import annotations
 from qtpy.QtCore import QCoreApplication
 
 
-def _set_field(win, pane_idx: int, field: str) -> None:
-    win._select_pane(pane_idx)        # synchronous; no events to drain
-    win._on_color_by(field)
-    QCoreApplication.processEvents()
-
-
-def test_timeline_domain_resets_when_no_time_varying_panes(make_main_window):
+def test_timeline_domain_resets_when_no_time_varying_panes(make_main_window, set_field):
     """Switching every pane to a non-time-varying field must null the strip's domain.
 
     Otherwise the playback timer keeps advancing against the previously
@@ -30,23 +24,23 @@ def test_timeline_domain_resets_when_no_time_varying_panes(make_main_window):
     win = make_main_window()
     win._on_pane_layout(2)
     QCoreApplication.processEvents()
-    _set_field(win, 0, "tas_t")
-    _set_field(win, 1, "tas_t")
+    set_field(win, 0, "tas_t")
+    set_field(win, 1, "tas_t")
 
     # Domain is populated as soon as a time-varying field is up.
     assert win._timeline_strip.domain[0] is not None
     assert win._timeline_strip.domain[1] is not None
 
     # Drop both panes to 'None' — strip hides + domain must reset.
-    _set_field(win, 0, "None")
-    _set_field(win, 1, "None")
+    set_field(win, 0, "None")
+    set_field(win, 1, "None")
 
     assert win._timeline_strip.domain[0] is None
     assert win._timeline_strip.domain[1] is None
     assert not win._timeline_strip.isVisible()
 
 
-def test_locked_pane_keeps_time_index_on_color_by_change(make_main_window):
+def test_locked_pane_keeps_time_index_on_color_by_change(make_main_window, set_field):
     """A locked pane's ``time_index`` must not be reassigned when its field changes.
 
     Lock contract: the pane is pinned to a specific datetime; nothing
@@ -58,8 +52,8 @@ def test_locked_pane_keeps_time_index_on_color_by_change(make_main_window):
     win = make_main_window()
     win._on_pane_layout(2)
     QCoreApplication.processEvents()
-    _set_field(win, 0, "tas_t")
-    _set_field(win, 1, "tas_t")
+    set_field(win, 0, "tas_t")
+    set_field(win, 1, "tas_t")
 
     # Advance master cursor so pane 1 sits at a non-zero index, then lock it.
     times = win._times_for(win._file_state.file_fields["tas_t"])
@@ -77,7 +71,7 @@ def test_locked_pane_keeps_time_index_on_color_by_change(make_main_window):
     # field swap must NOT realign the locked pane to the cursor.
     win._timeline_strip.cursor_changed.emit(times[7])
     QCoreApplication.processEvents()
-    _set_field(win, 1, "tas_daily")
+    set_field(win, 1, "tas_daily")
 
     assert win.state.panes[1].time_locked is True, \
         "lock state itself must survive the field change"
@@ -85,7 +79,7 @@ def test_locked_pane_keeps_time_index_on_color_by_change(make_main_window):
         "locked pane's time_index must not be reassigned on color_by change"
 
 
-def test_clim_symmetric_carry_back_covers_hidden_panes(make_main_window):
+def test_clim_symmetric_carry_back_covers_hidden_panes(make_main_window, set_field):
     """Toggling shared OFF must carry the shared value back to every pane.
 
     Previously the carry-back loop iterated only visible panes, so a
@@ -99,7 +93,7 @@ def test_clim_symmetric_carry_back_covers_hidden_panes(make_main_window):
     win._on_pane_layout(4)
     QCoreApplication.processEvents()
     for i in range(4):
-        _set_field(win, i, "tas_anomaly")
+        set_field(win, i, "tas_anomaly")
     assert all(p.center_zero is False for p in win.state.panes[:4])
 
     # Make tas_anomaly symmetric in shared mode (one write -> all panes

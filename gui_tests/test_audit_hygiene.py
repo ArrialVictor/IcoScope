@@ -14,12 +14,6 @@ from __future__ import annotations
 from qtpy.QtCore import QCoreApplication
 
 
-def _set_field(win, pane_idx: int, field: str) -> None:
-    win._select_pane(pane_idx)        # synchronous; no events to drain
-    win._on_color_by(field)
-    QCoreApplication.processEvents()
-
-
 def _pane_actor_names(win, pane_idx: int) -> set:
     """Return the set of named actors on pane ``pane_idx``'s renderer."""
     plotter = win._pane_container.pane(pane_idx).plotter
@@ -27,7 +21,7 @@ def _pane_actor_names(win, pane_idx: int) -> set:
     return set(renderer.actors.keys())
 
 
-def test_render_empty_sphere_clears_hidden_panes(make_main_window):
+def test_render_empty_sphere_clears_hidden_panes(make_main_window, set_field):
     """Close after shrink: hidden panes' grid actors must be gone too.
 
     Sequence: load file → 4-pane layout → field on every pane → shrink
@@ -40,7 +34,7 @@ def test_render_empty_sphere_clears_hidden_panes(make_main_window):
     win._on_pane_layout(4)
     QCoreApplication.processEvents()
     for i in range(4):
-        _set_field(win, i, "tas_t")
+        set_field(win, i, "tas_t")
     # Sanity: every pane has the grid actor before shrink.
     for i in range(4):
         assert "grid" in _pane_actor_names(win, i)
@@ -63,7 +57,7 @@ def test_render_empty_sphere_clears_hidden_panes(make_main_window):
         )
 
 
-def test_bar_config_cache_key_includes_color_by(make_main_window):
+def test_bar_config_cache_key_includes_color_by(make_main_window, set_field):
     """Switching color_by changes the bar_config cache entry, not just clim/cmap.
 
     Without color_by in the key, two fields that happen to share
@@ -73,12 +67,12 @@ def test_bar_config_cache_key_includes_color_by(make_main_window):
     win = make_main_window()
     win._on_pane_layout(1)
     QCoreApplication.processEvents()
-    _set_field(win, 0, "tas_t")
+    set_field(win, 0, "tas_t")
     QCoreApplication.processEvents()
     first_key = win._bar_config_cache.get(0)
     assert first_key is not None
 
-    _set_field(win, 0, "vort_t")
+    set_field(win, 0, "vort_t")
     QCoreApplication.processEvents()
     second_key = win._bar_config_cache.get(0)
     assert second_key is not None
@@ -93,13 +87,13 @@ def test_bar_config_cache_key_includes_color_by(make_main_window):
     assert any("vort_t" == part for part in second_key)
 
 
-def test_bar_config_cache_resets_on_file_close(make_main_window):
+def test_bar_config_cache_resets_on_file_close(make_main_window, set_field):
     """File close must drop _bar_config_cache alongside the clim caches."""
     win = make_main_window()
     win._on_pane_layout(2)
     QCoreApplication.processEvents()
-    _set_field(win, 0, "tas_t")
-    _set_field(win, 1, "tas_t")
+    set_field(win, 0, "tas_t")
+    set_field(win, 1, "tas_t")
     assert win._bar_config_cache, "sanity: cache populated during render"
 
     win._on_close_file()

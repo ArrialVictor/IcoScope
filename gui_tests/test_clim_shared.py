@@ -4,19 +4,13 @@ from __future__ import annotations
 from qtpy.QtCore import QCoreApplication
 
 
-def _set_field(win, pane_idx: int, field: str) -> None:
-    win._select_pane(pane_idx)        # synchronous; no events to drain
-    win._on_color_by(field)
-    QCoreApplication.processEvents()
-
-
-def test_same_field_two_panes_share_clim(make_main_window):
+def test_same_field_two_panes_share_clim(make_main_window, set_field):
     """Two panes both = tas_t → identical clim, even at different times."""
     win = make_main_window()
     win._on_pane_layout(2)
     QCoreApplication.processEvents()
-    _set_field(win, 0, "tas_t")
-    _set_field(win, 1, "tas_t")
+    set_field(win, 0, "tas_t")
+    set_field(win, 1, "tas_t")
 
     # Advance pane 0's time so the per-frame data ranges differ, but the
     # shared cache should still return the same global clim for both.
@@ -33,13 +27,13 @@ def test_same_field_two_panes_share_clim(make_main_window):
         f"got {clim_a} vs {clim_b}")
 
 
-def test_different_fields_different_clims(make_main_window):
+def test_different_fields_different_clims(make_main_window, set_field):
     """Two panes = different fields → independent (field-keyed) clims."""
     win = make_main_window()
     win._on_pane_layout(2)
     QCoreApplication.processEvents()
-    _set_field(win, 0, "tas_t")
-    _set_field(win, 1, "tas_daily")
+    set_field(win, 0, "tas_t")
+    set_field(win, 1, "tas_daily")
 
     clim_t = win._clim(0)
     clim_d = win._clim(1)
@@ -48,13 +42,13 @@ def test_different_fields_different_clims(make_main_window):
     assert clim_t != clim_d
 
 
-def test_symmetric_toggle_field_shared_in_shared_mode(make_main_window):
+def test_symmetric_toggle_field_shared_in_shared_mode(make_main_window, set_field):
     """Shared mode: symmetric toggle writes to clim_symmetric; pane.center_zero is unused."""
     win = make_main_window()
     win._on_pane_layout(2)
     QCoreApplication.processEvents()
-    _set_field(win, 0, "tas_anomaly")
-    _set_field(win, 1, "tas_anomaly")
+    set_field(win, 0, "tas_anomaly")
+    set_field(win, 1, "tas_anomaly")
 
     win._select_pane(0)
     QCoreApplication.processEvents()
@@ -73,7 +67,7 @@ def test_symmetric_toggle_field_shared_in_shared_mode(make_main_window):
     assert c0 == c1
 
 
-def test_toggle_shared_off_carries_back_symmetric_state(make_main_window):
+def test_toggle_shared_off_carries_back_symmetric_state(make_main_window, set_field):
     """Switching shared OFF copies the field-shared value back to pane.center_zero.
 
     Otherwise a previously-symmetric pane silently flips to autoscale
@@ -83,16 +77,16 @@ def test_toggle_shared_off_carries_back_symmetric_state(make_main_window):
     win = make_main_window()
     win._on_pane_layout(2)
     QCoreApplication.processEvents()
-    _set_field(win, 0, "tas_anomaly")
-    _set_field(win, 1, "tas_anomaly")
+    set_field(win, 0, "tas_anomaly")
+    set_field(win, 1, "tas_anomaly")
 
     # Make tas_anomaly symmetric in shared mode.
     win._on_center_zero(True)
     QCoreApplication.processEvents()
     # Briefly switch pane 1 to a different field and back — old code path
     # would clobber pane 1's pane.center_zero during the color_by change.
-    _set_field(win, 1, "tas_t")
-    _set_field(win, 1, "tas_anomaly")
+    set_field(win, 1, "tas_t")
+    set_field(win, 1, "tas_anomaly")
 
     # Now toggle shared OFF. The carry-back must restore pane 1's
     # center_zero from the shared dict so the visual doesn't flip.
@@ -103,12 +97,12 @@ def test_toggle_shared_off_carries_back_symmetric_state(make_main_window):
         "shared OFF must carry the shared value back to pane.center_zero"
 
 
-def test_toggle_shared_off_falls_back_to_per_pane(make_main_window):
+def test_toggle_shared_off_falls_back_to_per_pane(make_main_window, set_field):
     """With shared mode off, _clim returns None for non-symmetric panes."""
     win = make_main_window()
     win._on_pane_layout(1)
     QCoreApplication.processEvents()
-    _set_field(win, 0, "tas_t")
+    set_field(win, 0, "tas_t")
 
     # Default: shared on → cached clim.
     assert win._clim(0) is not None
@@ -120,12 +114,12 @@ def test_toggle_shared_off_falls_back_to_per_pane(make_main_window):
         "shared off + non-symmetric should return None (PyVista autoscale)")
 
 
-def test_file_unload_clears_clim_cache(make_main_window):
+def test_file_unload_clears_clim_cache(make_main_window, set_field):
     """Closing the file drops the cache so a new file doesn't see stale values."""
     win = make_main_window()
     win._on_pane_layout(1)
     QCoreApplication.processEvents()
-    _set_field(win, 0, "tas_t")
+    set_field(win, 0, "tas_t")
     win._clim(0)        # forces compute + cache
     assert "tas_t" in win._file_state.clim_cache
 
