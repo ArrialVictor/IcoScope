@@ -8,6 +8,7 @@ import pytest
 from netCDF4 import Dataset
 
 from icoscope.loader import (
+    _to_nan_array,
     describe,
     iter_field_slabs,
     load_grid,
@@ -136,6 +137,39 @@ def test_iter_field_slabs_min_max_matches_per_step_reads(test_nc):
 
     assert fast_lo == slow_lo
     assert fast_hi == slow_hi
+
+
+def test_to_nan_array_passthrough_on_plain_ndarray():
+    """A regular ndarray comes back as-is (no copy required by the contract)."""
+    arr = np.array([1.0, 2.0, 3.0], dtype=np.float32)
+    out = _to_nan_array(arr)
+    assert out.dtype == np.float32
+    np.testing.assert_array_equal(out, arr)
+
+
+def test_to_nan_array_nomask_fast_path_skips_filled():
+    """A MaskedArray with the nomask sentinel goes through the fast path.
+
+    The fast path returns the underlying data without calling
+    ``np.ma.filled`` — values must match the slow path exactly so the
+    optimisation is invisible to callers.
+    """
+    plain = np.array([1.0, 2.0, 3.0], dtype=np.float32)
+    masked = np.ma.array(plain)
+    assert masked.mask is np.ma.nomask    # sanity: fast-path trigger
+    out = _to_nan_array(masked)
+    np.testing.assert_array_equal(out, plain.astype(float))
+    assert not np.any(np.isnan(out))
+
+
+def test_to_nan_array_actual_mask_becomes_nan():
+    """A MaskedArray with real masked entries gets those slots filled with NaN."""
+    plain = np.array([10.0, 20.0, 30.0, 40.0])
+    mask = np.array([False, True, False, True])
+    masked = np.ma.array(plain, mask=mask)
+    out = _to_nan_array(masked)
+    assert np.isnan(out[1]) and np.isnan(out[3])
+    assert out[0] == 10.0 and out[2] == 30.0
 
 
 def test_iter_field_slabs_raises_keyerror_on_unknown_field(test_nc):
