@@ -17,8 +17,10 @@ from qtpy.QtCore import QCoreApplication
 
 
 def _set_field(win, pane_idx: int, field: str) -> None:
+    # _select_pane is synchronous (no signals fired), so a processEvents
+    # between it and _on_color_by drains nothing. One drain at the end is
+    # enough — saves ~50-100ms per call across the GUI test suite.
     win._select_pane(pane_idx)
-    QCoreApplication.processEvents()
     win._on_color_by(field)
     QCoreApplication.processEvents()
 

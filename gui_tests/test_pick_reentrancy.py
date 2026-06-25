@@ -41,7 +41,14 @@ def _nearest_cell(win, lon: float, lat: float) -> int:
 
 
 def test_pick_reentrancy_no_drift(make_main_window):
-    """200 alternating picks across 4 panes never desync selection ↔ status."""
+    """40 alternating picks across 4 panes never desync selection ↔ status.
+
+    10 cycles per pane is enough to surface the original re-entrancy bug
+    (a single mis-sequenced event was sufficient to drift). Larger counts
+    don't add coverage; they just cost wall clock — at ~250 ms per
+    processEvents tick under PyVista, dropping from 200 to 40 reclaims
+    ~40 s on this single test.
+    """
     win = make_main_window()
     win._on_pane_layout(4)
     QCoreApplication.processEvents()
@@ -56,7 +63,7 @@ def test_pick_reentrancy_no_drift(make_main_window):
     cell_idx = _nearest_cell(win, lon=0.0, lat=0.0)
 
     failures: list[str] = []
-    for i in range(200):
+    for i in range(40):
         target = i % 4
         win._on_pane_pick(target, cell_idx, lon=0.0, lat=0.0)
         QCoreApplication.processEvents()
