@@ -481,6 +481,23 @@ class MainWindow(QMainWindow):
             return None
         return ctx.get_times(meta["time_dim_name"])
 
+    def _get_field_times(self, field_name):
+        """Return ``field_name``'s parsed datetimes, or None if it has no axis.
+
+        Wraps the recurring ``file_fields.get + _times_for + non-empty``
+        sequence into one call. Returns ``None`` when the field isn't in
+        the loaded file, when it has no time axis, or when the axis
+        exists but carries zero samples — callers only have to check
+        for ``None``.
+        """
+        meta = self._file_state.file_fields.get(field_name)
+        if not meta:
+            return None
+        times = self._times_for(meta)
+        if times is None or len(times) == 0:
+            return None
+        return times
+
     # ── colors ─────────────────────────────────────
     def _edge_color(self):
         return self.state.edge_color_override or THEMES[self.theme_name]["edge"]
@@ -1826,31 +1843,41 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(duration_ms, lambda: self._error_label.setText(""))
 
     def _on_open_file(self) -> None:
+        """File → Open NetCDF: pick a path, reset prior state, load + activate.
+
+        The File-tab load sequence is split across four methods that all
+        coordinate through ``self._file_cache`` and ``self._file_state``:
+
+        1. ``_on_open_file`` (this method) — the user-facing entry point.
+           Closes any previous Dataset, resets per-pane / clim / bar caches
+           so values from the previous file can't bleed through, then
+           delegates the actual load to ``_load_file_into_cache``.
+        2. ``_load_file_into_cache`` — does the parse + cache + activate
+           sequence; shared with the ``--file`` CLI startup path in
+           :func:`run`.
+        3. ``_sync_file_info`` — populates the File-tab summary widget
+           (n_cells / n_fields / n_time_steps / attrs).
+        4. ``_activate_file_view`` — restores per-pane color_by /
+           time_index / level_index from the (just-reset) PaneState,
+           reconfigures sliders, and rebuilds the scene.
+
+        ``_on_close_file`` is the unwinding counterpart: closes the
+        Dataset and clears the same caches this method clears.
+        """
         path, _ = QFileDialog.getOpenFileName(
             self, "Open NetCDF", "", "NetCDF (*.nc *.nc4 *.cdf);;All files (*)"
         )
         if not path:
-            return
-        try:
-            from .loader import FileContext, load_grid, read_levels
-            verts, cells, centers, fields = load_grid(path)
-            levels = read_levels(path)
-            context = FileContext(path)
-        except Exception as e:
-            QMessageBox.critical(self, "Load failed", str(e))
             return
         # Close any previous file's Dataset handle so we don't leak.
         if self._file_cache is not None:
             old_ctx = self._file_cache.get("context")
             if old_ctx is not None:
                 old_ctx.close()
-        self.file_path = path
-        self._file_state.file_fields = fields
-        self._file_state.file_levels = levels
-        # Fresh file: reset selections on every pane (not just pane 0) so
-        # _activate_file_view's "preserve prior choice" path doesn't carry
-        # over a field/index from the previous file, and so hidden panes
-        # don't surface a stale field name when the layout is re-expanded.
+        # Fresh file: reset per-pane selections so _activate_file_view's
+        # "preserve prior choice" path doesn't carry over a field/index
+        # from the previous file, and so hidden panes don't surface a
+        # stale field name when the layout is re-expanded.
         for pane in self._file_state.panes:
             pane.color_by = "None"
             pane.time_index = 0
@@ -1867,6 +1894,31 @@ class MainWindow(QMainWindow):
         # clim, …) — none of which is meaningful across a file boundary;
         # drop it so the new file builds fresh actors.
         self._bar_config_cache = {}
+        try:
+            self._load_file_into_cache(path)
+        except Exception as e:
+            QMessageBox.critical(self, "Load failed", str(e))
+            return
+        # Auto-switch to the File tab so the user sees the loaded data.
+        self.panel.tabs.setCurrentIndex(Tab.FILE)
+
+    def _load_file_into_cache(self, path: str) -> None:
+        """Parse ``path``, populate ``_file_cache``, activate the File view.
+
+        Shared by ``_on_open_file`` (user-triggered, wraps to show a Qt
+        error dialog) and :func:`run` (``--file`` CLI startup, lets
+        exceptions propagate so the launch fails loudly). The caller is
+        responsible for any pre-load cleanup (previous Dataset close,
+        per-pane state reset, cache invalidation); this method assumes a
+        clean slate.
+        """
+        from .loader import FileContext, load_grid, read_levels
+        verts, cells, centers, fields = load_grid(path)
+        levels = read_levels(path)
+        context = FileContext(path)
+        self.file_path = path
+        self._file_state.file_fields = fields
+        self._file_state.file_levels = levels
         self._file_cache = {
             "path": path,
             "verts": verts,
@@ -1879,8 +1931,6 @@ class MainWindow(QMainWindow):
         self.panel.file_tab.set_file_loaded(True)
         self._sync_file_info(path)
         self._activate_file_view()
-        # Auto-switch to the File tab so the user sees the loaded data.
-        self.panel.tabs.setCurrentIndex(Tab.FILE)
 
     def _sync_file_info(self, path: str):
         """Populate the File tab summary from the currently-loaded file."""
@@ -2150,9 +2200,8 @@ class MainWindow(QMainWindow):
         pane_widget = self._pane_container.pane(pane_idx)
         pane = self.state.panes[pane_idx]
         cursor = self._file_state.time_cursor
-        meta = self._file_state.file_fields.get(pane.color_by)
-        times = self._times_for(meta) if meta else None
-        if cursor is None or times is None or len(times) == 0:
+        times = self._get_field_times(pane.color_by)
+        if cursor is None or times is None:
             pane_widget.set_banner(None)
             return
         if is_in_range(cursor, times):
@@ -2187,9 +2236,8 @@ class MainWindow(QMainWindow):
         if cursor is None:
             return 0
         pane = self.state.panes[pane_idx]
-        meta = self._file_state.file_fields.get(pane.color_by)
-        times = self._times_for(meta) if meta else None
-        if times is None or len(times) == 0:
+        times = self._get_field_times(pane.color_by)
+        if times is None:
             return 0
         return last_previous_time_index(cursor, times)
 
@@ -2231,9 +2279,8 @@ class MainWindow(QMainWindow):
         for i in range(self._pane_container.n_visible):
             pane = self.state.panes[i]
             if cursor is not None and not pane.time_locked:
-                meta = self._file_state.file_fields.get(pane.color_by)
-                times = self._times_for(meta) if meta else None
-                if times is not None and len(times) > 0:
+                times = self._get_field_times(pane.color_by)
+                if times is not None:
                     new_idx = last_previous_time_index(cursor, times)
                     if new_idx != pane.time_index:
                         pane.time_index = new_idx
@@ -2330,8 +2377,7 @@ class MainWindow(QMainWindow):
         any_time_varying = False
         for i in range(self._pane_container.n_visible):
             pane = self.state.panes[i]
-            meta = self._file_state.file_fields.get(pane.color_by)
-            times = self._times_for(meta) if meta else None
+            times = self._get_field_times(pane.color_by)
             # Prefix the track label with the 1-indexed pane number so the
             # strip is self-describing. Just the number (not "Pane N") to
             # keep the prefix short when the field name is long — track
@@ -2339,7 +2385,7 @@ class MainWindow(QMainWindow):
             # context makes "1:" unambiguous.
             label = (f"{i + 1}: {pane.color_by}"
                      if pane.color_by != "None" else f"Pane {i + 1}")
-            if times is not None and len(times) > 0:
+            if times is not None:
                 any_time_varying = True
                 tracks.append((label, list(times)))
             else:
@@ -2370,8 +2416,7 @@ class MainWindow(QMainWindow):
         for i in range(self._pane_container.n_visible):
             pane = self.state.panes[i]
             if pane.time_locked:
-                meta = self._file_state.file_fields.get(pane.color_by)
-                times = self._times_for(meta) if meta else None
+                times = self._get_field_times(pane.color_by)
                 if times is not None and 0 <= pane.time_index < len(times):
                     cursors.append(times[pane.time_index])
                 else:
@@ -2477,27 +2522,11 @@ def run(
             "centers": np.asarray(centers),
         }
     if file_path:
-        # Load the file's mesh + fields as if the user had clicked Open in
-        # the File tab. _on_open_file's logic is reused via the cache path.
-        from .loader import FileContext, load_grid, read_levels
-        f_verts, f_cells, f_centers, fields = load_grid(file_path)
-        levels = read_levels(file_path)
-        context = FileContext(file_path)
-        w.file_path = file_path
-        w._file_state.file_fields = fields
-        w._file_state.file_levels = levels
-        w._file_cache = {
-            "path": file_path,
-            "verts": f_verts,
-            "cells": f_cells,
-            "centers": np.asarray(f_centers),
-            "fields": fields,
-            "levels": levels,
-            "context": context,
-        }
-        w.panel.file_tab.set_file_loaded(True)
-        w._sync_file_info(file_path)
-        w._activate_file_view()
+        # Load the file's mesh + fields as if the user had clicked Open
+        # in the File tab. Shared helper avoids drifting from the
+        # interactive path — exceptions propagate so a bad --file fails
+        # loudly at startup instead of opening an empty window.
+        w._load_file_into_cache(file_path)
         w.panel.tabs.setCurrentIndex(Tab.FILE)
     w.show()
     sys.exit(app.exec())
