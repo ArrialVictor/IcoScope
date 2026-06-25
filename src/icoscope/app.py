@@ -26,7 +26,7 @@ from .coastlines import coastline_polydata
 from .controls import ControlPanel
 from .graticule import graticule_polydata
 from .grid import goldberg
-from .lonlat import latlon_mesh
+from .lonlat import lonlat_mesh
 from .panes import PaneContainer
 from .picker import Picker
 from .playback import Playback
@@ -767,10 +767,10 @@ class MainWindow(QMainWindow):
         bar_config = (bar_on, pane.color_by, pane.cmap,
                       tuple(clim_val) if clim_val else None,
                       cbar_color, bar_title)
-        cache = getattr(self, "_last_bar_config", None)
+        cache = getattr(self, "_bar_config_cache", None)
         if cache is None:
-            self._last_bar_config = {}
-            cache = self._last_bar_config
+            self._bar_config_cache = {}
+            cache = self._bar_config_cache
         config_changed = cache.get(pane_idx) != bar_config
         if config_changed:
             # Suppress the multi-exception zoo PyVista raises when the
@@ -1121,18 +1121,18 @@ class MainWindow(QMainWindow):
         plotter.reset_camera()
         plotter.render()
 
-    def _on_pane_clicked(self, idx: int) -> None:
-        """User left-clicked pane ``idx``. Promote it to the selected pane.
+    def _on_pane_clicked(self, pane_idx: int) -> None:
+        """User left-clicked pane ``pane_idx``. Promote it to the selected pane.
 
         Updates the visible selection ring, swaps the File-tab side panel
         to per-pane mode for that pane, and triggers a refresh so the
         per-pane widgets reflect the new pane's :class:`PaneState`.
         """
-        if idx == self._selected_pane:
+        if pane_idx == self._selected_pane:
             # Re-selecting the same pane is a no-op (avoids toggling off
             # during normal click-to-rotate; explicit deselect is via Esc).
             return
-        self._select_pane(idx)
+        self._select_pane(pane_idx)
 
     def _on_pane_pick(self, pane_idx: int, cell_idx: int | None,
                       *, lon: float | None = None,
@@ -1709,12 +1709,12 @@ class MainWindow(QMainWindow):
     def _regen_lonlat(self) -> None:
         """Build (or reuse) the synthetic LonLat mesh and render it.
 
-        ``latlon_mesh`` raises ``ValueError`` for invalid LMDZ-zoom combinations
+        ``lonlat_mesh`` raises ``ValueError`` for invalid LMDZ-zoom combinations
         (the 2β-G>0 check). Let it propagate — ``_on_lmdz_zoom`` catches it
         and triggers the snap-back + red error message.
         """
         def build():
-            return latlon_mesh(
+            return lonlat_mesh(
                 iim=self.iim, jjm=self.jjm,
                 clon=self.lmdz_clon, clat=self.lmdz_clat,
                 grossismx=self.lmdz_grossismx,
@@ -1735,9 +1735,22 @@ class MainWindow(QMainWindow):
         if self._is_lonlat_tab_active():
             self._regen_lonlat()
 
-    def _on_lmdz_zoom(self, clon, clat, gx, gy, dx, dy, tx, ty):
+    def _on_lmdz_zoom(self, clon: float, clat: float,
+                      gx: float, gy: float,
+                      dx: float, dy: float,
+                      tx: float, ty: float) -> None:
+        """User changed any LMDZ tanh-zoom parameter on the LonLat tab.
+
+        Parameter names mirror the LMDZ namelist (see ``_tanh_coord_1d``
+        in ``lonlat.py``) so they stay grep-able against the upstream
+        Fortran: ``(clon, clat)`` = focal point in degrees;
+        ``(gx, gy)`` = ``grossism`` (concentration factor, ≥1);
+        ``(dx, dy)`` = ``dzoom`` (zoom half-width as a fraction of the
+        domain); ``(tx, ty)`` = ``taux/tauy`` (sharpness of the
+        transition between zoomed and outer regions).
+        """
         # Snapshot the last known good params so we can roll back if the new
-        # ones fail the 2·β - G > 0 validity check inside latlon_mesh.
+        # ones fail the 2·β - G > 0 validity check inside lonlat_mesh.
         snapshot = (self.lmdz_clon, self.lmdz_clat,
                     self.lmdz_grossismx, self.lmdz_grossismy,
                     self.lmdz_dzoomx, self.lmdz_dzoomy,
@@ -1771,8 +1784,8 @@ class MainWindow(QMainWindow):
             # we grey out the Activate toggle until the combination becomes
             # valid again, so they can't activate a broken zoom.
             try:
-                from .lonlat import latlon_mesh
-                latlon_mesh(
+                from .lonlat import lonlat_mesh
+                lonlat_mesh(
                     iim=4, jjm=4,                # cheap validation grid
                     clon=self.lmdz_clon, clat=self.lmdz_clat,
                     grossismx=self.lmdz_grossismx,
@@ -1853,7 +1866,7 @@ class MainWindow(QMainWindow):
         # Per-pane scalar-bar config cache is keyed by (color_by, cmap,
         # clim, …) — none of which is meaningful across a file boundary;
         # drop it so the new file builds fresh actors.
-        self._last_bar_config = {}
+        self._bar_config_cache = {}
         self._file_cache = {
             "path": path,
             "verts": verts,
@@ -1909,7 +1922,7 @@ class MainWindow(QMainWindow):
         # is loaded next.
         self._file_state.clim_cache = {}
         self._file_state.clim_symmetric = {}
-        self._last_bar_config = {}
+        self._bar_config_cache = {}
         self._file_cache = None
         # Hide any stale banners — the file they referenced is gone.
         for i in range(self._pane_container.MAX_PANES):
@@ -2095,13 +2108,13 @@ class MainWindow(QMainWindow):
         self._clear_pick_state(render=False, deselect_pane=False)
         self._update_status()
 
-    def _on_time_changed(self, idx):
+    def _on_time_changed(self, time_index: int) -> None:
         # Targets the selected pane (or pane 0 when no selection). The
         # scrub also sets the file-tab's master ``time_cursor`` so every
         # other visible pane resolves the cursor to its own axis — files
         # with multiple time dims (daily + monthly) stay aligned without
         # the user having to scrub each pane's slider.
-        if idx == self.pane_state.time_index:
+        if time_index == self.pane_state.time_index:
             return
         # A locked pane must stay pinned regardless of UI entry point.
         # Snap the slider back to the pane's frozen index so the slider
@@ -2114,10 +2127,10 @@ class MainWindow(QMainWindow):
             slider.blockSignals(False)
             self.panel.file_tab.set_time_label(self.pane_state.time_index)
             return
-        self.pane_state.time_index = idx
+        self.pane_state.time_index = time_index
         meta = self._file_state.file_fields.get(self.pane_state.color_by)
         if meta:
-            self.panel.file_tab.set_time_label(idx)
+            self.panel.file_tab.set_time_label(time_index)
         self._sync_cursor_from_pane(self._active_pane_idx)
         self._refresh_picked_value()
         # Scrubs only mutate cell scalars in place — cheap re-render is
@@ -2373,10 +2386,10 @@ class MainWindow(QMainWindow):
         text = short_datetime(master) if master is not None else ""
         self._timeline_strip.playback_bar.set_cursor_label(text)
 
-    def _on_level_changed(self, idx):
-        if idx == self.pane_state.level_index:
+    def _on_level_changed(self, level_index: int) -> None:
+        if level_index == self.pane_state.level_index:
             return
-        self.pane_state.level_index = idx
+        self.pane_state.level_index = level_index
         self._refresh_scalars()
         self._refresh_picked_value()
         self._update_scalars_only()

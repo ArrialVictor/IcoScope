@@ -6,7 +6,7 @@
 - bar_config cache key includes pane.color_by, so two fields with
   coincidentally identical cmap/clim/cbar_color/title can't share a
   cached scalar-bar actor.
-- _last_bar_config is reset on file open/close alongside the clim
+- _bar_config_cache is reset on file open/close alongside the clim
   caches.
 """
 from __future__ import annotations
@@ -76,12 +76,12 @@ def test_bar_config_cache_key_includes_color_by(make_main_window):
     QCoreApplication.processEvents()
     _set_field(win, 0, "tas_t")
     QCoreApplication.processEvents()
-    first_key = win._last_bar_config.get(0)
+    first_key = win._bar_config_cache.get(0)
     assert first_key is not None
 
     _set_field(win, 0, "vort_t")
     QCoreApplication.processEvents()
-    second_key = win._last_bar_config.get(0)
+    second_key = win._bar_config_cache.get(0)
     assert second_key is not None
     assert second_key != first_key, (
         "switching color_by must produce a different bar_config tuple "
@@ -94,18 +94,18 @@ def test_bar_config_cache_key_includes_color_by(make_main_window):
     assert any("vort_t" == part for part in second_key)
 
 
-def test_last_bar_config_resets_on_file_close(make_main_window):
-    """File close must drop _last_bar_config alongside the clim caches."""
+def test_bar_config_cache_resets_on_file_close(make_main_window):
+    """File close must drop _bar_config_cache alongside the clim caches."""
     win = make_main_window()
     win._on_pane_layout(2)
     QCoreApplication.processEvents()
     _set_field(win, 0, "tas_t")
     _set_field(win, 1, "tas_t")
-    assert win._last_bar_config, "sanity: cache populated during render"
+    assert win._bar_config_cache, "sanity: cache populated during render"
 
     win._on_close_file()
     QCoreApplication.processEvents()
-    assert win._last_bar_config == {}, (
-        "close-file must reset _last_bar_config so the next file "
+    assert win._bar_config_cache == {}, (
+        "close-file must reset _bar_config_cache so the next file "
         "rebuilds actors from scratch"
     )
