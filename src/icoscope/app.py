@@ -1306,14 +1306,28 @@ class MainWindow(QMainWindow):
             self._file_layout = n_panes
         panes = self.state.panes
         # Newly-visible panes inherit pane 0's settings so the user has
-        # a coherent starting point (see _design/multi-pane-comparison.md
-        # "Default on file open"). Use dataclasses.replace so each new
-        # pane is an independent copy.
+        # a coherent starting point. Use dataclasses.replace so each
+        # new pane is an independent copy.
         from dataclasses import replace
+        # Track which panes already had a PaneState before the grow —
+        # those keep their (possibly customised) state and need their
+        # own slab read; everything appended below is a clone of pane 0
+        # and can share pane 0's scalar array.
+        prev_state_count = len(panes)
         while len(panes) < n_panes:
             panes.append(replace(panes[0]))
-        for idx in range(n_panes):
+        # Pre-existing PaneStates that just became visible again
+        # (re-expansion after a prior shrink) may carry a custom
+        # color_by / time / level — re-read their slabs.
+        for idx in range(prev_n, prev_state_count):
             self._refresh_scalars(idx)
+        # Fresh clones share pane 0's (already-current) scalar array
+        # by reference. Subsequent state changes route through
+        # _refresh_scalars which always assigns a fresh array, so the
+        # shared reference never causes write-aliasing bugs.
+        for idx in range(prev_state_count, n_panes):
+            self._pane_scalars[idx] = self._pane_scalars[0]
+        for idx in range(prev_n, n_panes):
             self._update_scalars_only(idx)
             self._update_pane_banner(idx)
         # Rebuild the timeline strip — track count follows visible-pane count.
