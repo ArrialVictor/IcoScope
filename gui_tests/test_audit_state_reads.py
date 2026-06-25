@@ -16,15 +16,6 @@ from __future__ import annotations
 from qtpy.QtCore import QCoreApplication
 
 
-def _set_field(win, pane_idx: int, field: str) -> None:
-    # _select_pane is synchronous (no signals fired), so a processEvents
-    # between it and _on_color_by drains nothing. One drain at the end is
-    # enough — saves ~50-100ms per call across the GUI test suite.
-    win._select_pane(pane_idx)
-    win._on_color_by(field)
-    QCoreApplication.processEvents()
-
-
 def _pick_target_cell(win) -> int:
     import numpy as np
     centers = np.asarray(win.centers)
@@ -33,7 +24,7 @@ def _pick_target_cell(win) -> int:
     return int(np.argmin(lats ** 2 + lons ** 2))
 
 
-def test_pick_on_non_active_pane_uses_its_own_field_units(make_main_window):
+def test_pick_on_non_active_pane_uses_its_own_field_units(make_main_window, set_field):
     """Picking pane 2 must surface pane 2's units, not pane 1's.
 
     Before the fix, ``_current_color_by_units`` and ``_set_cell_value``
@@ -44,8 +35,8 @@ def test_pick_on_non_active_pane_uses_its_own_field_units(make_main_window):
     win = make_main_window()
     win._on_pane_layout(2)
     QCoreApplication.processEvents()
-    _set_field(win, 0, "tas_t")
-    _set_field(win, 1, "vort_t")
+    set_field(win, 0, "tas_t")
+    set_field(win, 1, "vort_t")
     cell = _pick_target_cell(win)
 
     # Pick on pane 2 — selection promotes pane 2 to active.
@@ -104,7 +95,7 @@ def test_theme_change_updates_every_pane_cmap(make_main_window):
         )
 
 
-def test_file_close_resets_color_by_on_every_pane(make_main_window):
+def test_file_close_resets_color_by_on_every_pane(make_main_window, set_field):
     """Closing the file clears color_by on every pane, not just pane 1.
 
     Otherwise a hidden pane (e.g. pane 4 after the user shrunk to 2x2)
@@ -115,7 +106,7 @@ def test_file_close_resets_color_by_on_every_pane(make_main_window):
     win._on_pane_layout(4)
     QCoreApplication.processEvents()
     for i in range(4):
-        _set_field(win, i, "tas_t")
+        set_field(win, i, "tas_t")
     assert all(p.color_by == "tas_t" for p in win._file_state.panes[:4])
 
     # Shrink the visible layout — panes 3 and 4 are now hidden but

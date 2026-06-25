@@ -11,19 +11,13 @@ from __future__ import annotations
 from qtpy.QtCore import QCoreApplication
 
 
-def _set_field(win, pane_idx: int, field: str) -> None:
-    win._select_pane(pane_idx)        # synchronous; no events to drain
-    win._on_color_by(field)
-    QCoreApplication.processEvents()
-
-
-def test_slider_scrub_on_locked_pane_keeps_pinned_time_index(make_main_window):
+def test_slider_scrub_on_locked_pane_keeps_pinned_time_index(make_main_window, set_field):
     """Direct slider drag on a locked pane is a no-op on time_index."""
     win = make_main_window()
     win._on_pane_layout(2)
     QCoreApplication.processEvents()
-    _set_field(win, 0, "tas_t")
-    _set_field(win, 1, "tas_t")
+    set_field(win, 0, "tas_t")
+    set_field(win, 1, "tas_t")
 
     # Advance the active pane to a non-zero sample, then lock it.
     times = win._times_for(win._file_state.file_fields["tas_t"])
@@ -51,12 +45,12 @@ def test_slider_scrub_on_locked_pane_keeps_pinned_time_index(make_main_window):
     )
 
 
-def test_slider_position_snaps_back_on_locked_pane(make_main_window):
+def test_slider_position_snaps_back_on_locked_pane(make_main_window, set_field):
     """After a no-op scrub on a locked pane, the slider widget shows the pinned index."""
     win = make_main_window()
     win._on_pane_layout(1)
     QCoreApplication.processEvents()
-    _set_field(win, 0, "tas_t")
+    set_field(win, 0, "tas_t")
     times = win._times_for(win._file_state.file_fields["tas_t"])
     win._timeline_strip.cursor_changed.emit(times[2])
     QCoreApplication.processEvents()
@@ -76,12 +70,12 @@ def test_slider_position_snaps_back_on_locked_pane(make_main_window):
     )
 
 
-def test_slider_scrub_works_normally_when_unlocked(make_main_window):
+def test_slider_scrub_works_normally_when_unlocked(make_main_window, set_field):
     """The new guard must NOT affect normal (unlocked) slider scrubs."""
     win = make_main_window()
     win._on_pane_layout(1)
     QCoreApplication.processEvents()
-    _set_field(win, 0, "tas_t")
+    set_field(win, 0, "tas_t")
     assert win.state.panes[0].time_locked is False
 
     win._on_time_changed(5)

@@ -137,3 +137,22 @@ def tmp_export_dir() -> Iterator[Path]:
     """Provide a temporary directory for tests that write exported files."""
     with tempfile.TemporaryDirectory() as td:
         yield Path(td)
+
+
+@pytest.fixture
+def set_field():
+    """Helper: select a pane, change its ``color_by``, drain the event queue.
+
+    Eight test files previously defined an identical local copy of this
+    two-line wrapper. Centralising it here cuts the duplication and
+    means future tweaks (like the previous ``processEvents`` drop) only
+    need editing in one place.
+
+    ``_select_pane`` is synchronous (no signals fire), so only one
+    drain at the end is required.
+    """
+    def _set(win, pane_idx: int, field: str) -> None:
+        win._select_pane(pane_idx)
+        win._on_color_by(field)
+        QCoreApplication.processEvents()
+    return _set

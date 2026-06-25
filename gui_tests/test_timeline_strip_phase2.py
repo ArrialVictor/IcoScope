@@ -4,19 +4,13 @@ from __future__ import annotations
 from qtpy.QtCore import QCoreApplication
 
 
-def _set_field(win, pane_idx: int, field: str) -> None:
-    win._select_pane(pane_idx)        # synchronous; no events to drain
-    win._on_color_by(field)
-    QCoreApplication.processEvents()
-
-
-def _setup_two_panes(win) -> int:
+def _setup_two_panes(win, set_field) -> int:
     """2-pane File-tab, pane 1=tas_t (monthly), pane 2=tas_daily. Returns cell idx."""
     import numpy as np
     win._on_pane_layout(2)
     QCoreApplication.processEvents()
-    _set_field(win, 0, "tas_t")
-    _set_field(win, 1, "tas_daily")
+    set_field(win, 0, "tas_t")
+    set_field(win, 1, "tas_daily")
     # Equator-ish cell for a stable, comparable value.
     centers = np.asarray(win.centers)
     lats = np.degrees(np.arcsin(np.clip(centers[:, 2], -1, 1)))
@@ -24,10 +18,10 @@ def _setup_two_panes(win) -> int:
     return int(np.argmin(lats ** 2 + lons ** 2))
 
 
-def test_pick_populates_value_column_on_every_track(make_main_window):
+def test_pick_populates_value_column_on_every_track(make_main_window, set_field):
     """A cell pick surfaces a per-pane value on every track's value column."""
     win = make_main_window()
-    cell = _setup_two_panes(win)
+    cell = _setup_two_panes(win, set_field)
     win._select_pane(0)
     QCoreApplication.processEvents()
 
@@ -47,10 +41,10 @@ def test_pick_populates_value_column_on_every_track(make_main_window):
     assert "K" in tracks[1].value_text
 
 
-def test_lock_prevents_cursor_propagation(make_main_window):
+def test_lock_prevents_cursor_propagation(make_main_window, set_field):
     """Locking pane 2 pins its time_index while the cursor advances."""
     win = make_main_window()
-    _setup_two_panes(win)
+    _setup_two_panes(win, set_field)
     win._select_pane(0)
     QCoreApplication.processEvents()
 
@@ -71,10 +65,10 @@ def test_lock_prevents_cursor_propagation(make_main_window):
         "locked pane must not move with the cursor"
 
 
-def test_label_click_selects_pane(make_main_window):
+def test_label_click_selects_pane(make_main_window, set_field):
     """Clicking a track's label region routes to _select_pane."""
     win = make_main_window()
-    _setup_two_panes(win)
+    _setup_two_panes(win, set_field)
     win._select_pane(0)
     QCoreApplication.processEvents()
     assert win._selected_pane == 0
@@ -85,10 +79,10 @@ def test_label_click_selects_pane(make_main_window):
     assert win._selected_pane == 1
 
 
-def test_lock_state_persists_across_layout_refresh(make_main_window):
+def test_lock_state_persists_across_layout_refresh(make_main_window, set_field):
     """Rebuilding tracks (e.g. color_by change) must preserve lock visuals."""
     win = make_main_window()
-    _setup_two_panes(win)
+    _setup_two_panes(win, set_field)
     win._on_timeline_lock_toggled(1)
     QCoreApplication.processEvents()
     assert win._timeline_strip.tracks[1].locked is True
@@ -96,13 +90,13 @@ def test_lock_state_persists_across_layout_refresh(make_main_window):
     # Force a rebuild by changing pane 1's color_by — _refresh_timeline_strip
     # runs and re-creates the tracks if pane count changed (it didn't, but
     # the lock-restore loop runs unconditionally).
-    _set_field(win, 0, "tas_t")
+    set_field(win, 0, "tas_t")
     QCoreApplication.processEvents()
     assert win._timeline_strip.tracks[1].locked is True, \
         "lock visual must survive a strip rebuild"
 
 
-def test_locked_track_cursor_stays_at_pinned_time(make_main_window):
+def test_locked_track_cursor_stays_at_pinned_time(make_main_window, set_field):
     """The cursor bar on a locked track must not follow the master cursor.
 
     Regression: previously the strip pushed one shared cursor to every
@@ -110,7 +104,7 @@ def test_locked_track_cursor_stays_at_pinned_time(make_main_window):
     drifted with the master — confusingly out of sync with the data.
     """
     win = make_main_window()
-    _setup_two_panes(win)
+    _setup_two_panes(win, set_field)
     win._select_pane(0)
     QCoreApplication.processEvents()
 
@@ -132,10 +126,10 @@ def test_locked_track_cursor_stays_at_pinned_time(make_main_window):
         "locked track cursor must stay at the pinned datetime"
 
 
-def test_unlocking_jumps_track_cursor_and_data_to_master(make_main_window):
+def test_unlocking_jumps_track_cursor_and_data_to_master(make_main_window, set_field):
     """Unlocking snaps both the cursor visual AND the pane data to master."""
     win = make_main_window()
-    _setup_two_panes(win)
+    _setup_two_panes(win, set_field)
     win._select_pane(0)
     QCoreApplication.processEvents()
 
@@ -157,10 +151,10 @@ def test_unlocking_jumps_track_cursor_and_data_to_master(make_main_window):
         "unlocking must snap the track cursor back to the master"
 
 
-def test_cursor_clears_value_column(make_main_window):
+def test_cursor_clears_value_column(make_main_window, set_field):
     """Empty-click / Escape clears the pick → value column hides."""
     win = make_main_window()
-    cell = _setup_two_panes(win)
+    cell = _setup_two_panes(win, set_field)
     win._select_pane(0)
     QCoreApplication.processEvents()
     win._on_pane_pick(0, cell, lon=0.0, lat=0.0)

@@ -20,15 +20,9 @@ from __future__ import annotations
 from qtpy.QtCore import QCoreApplication
 
 
-def _set_field(win, pane_idx: int, field: str) -> None:
-    win._select_pane(pane_idx)        # synchronous; no events to drain
-    win._on_color_by(field)
-    QCoreApplication.processEvents()
-
-
 # ── Playback toggle wiring ────────────────────────────────────────────
 
-def test_play_button_click_drives_toggle_play(make_main_window):
+def test_play_button_click_drives_toggle_play(make_main_window, set_field):
     """Toggling Play via the button (not via the harness prime) must reach Playback.
 
     Previously only the harness path was exercised; a regression in
@@ -38,7 +32,7 @@ def test_play_button_click_drives_toggle_play(make_main_window):
     win = make_main_window()
     win._on_pane_layout(1)
     QCoreApplication.processEvents()
-    _set_field(win, 0, "tas_t")
+    set_field(win, 0, "tas_t")
     bar = win._timeline_strip.playback_bar
     assert bar.play_btn.isChecked() is False
     assert win.playback._play_timer is None
@@ -72,12 +66,12 @@ def _pane_camera_position(win, idx: int):
     return cam.GetPosition()
 
 
-def test_camera_sync_on_mirrors_changes(make_main_window):
+def test_camera_sync_on_mirrors_changes(make_main_window, set_field):
     """With sync ON, moving pane 1's camera mirrors onto every other visible pane."""
     win = make_main_window()
     win._on_pane_layout(2)
     QCoreApplication.processEvents()
-    _set_field(win, 0, "tas_t")
+    set_field(win, 0, "tas_t")
     assert win._camera_sync_on is True
 
     src_cam = (
@@ -96,12 +90,12 @@ def test_camera_sync_on_mirrors_changes(make_main_window):
     )
 
 
-def test_camera_sync_off_leaves_panes_independent(make_main_window):
+def test_camera_sync_off_leaves_panes_independent(make_main_window, set_field):
     """With sync OFF, pane 1's camera moves don't touch pane 2's view."""
     win = make_main_window()
     win._on_pane_layout(2)
     QCoreApplication.processEvents()
-    _set_field(win, 0, "tas_t")
+    set_field(win, 0, "tas_t")
     win._on_camera_sync(False)
     QCoreApplication.processEvents()
     assert win._camera_sync_on is False
@@ -122,7 +116,7 @@ def test_camera_sync_off_leaves_panes_independent(make_main_window):
 
 # ── Clim shared toggle ON snapshot priority ───────────────────────────
 
-def test_clim_shared_toggle_on_active_pane_wins(make_main_window):
+def test_clim_shared_toggle_on_active_pane_wins(make_main_window, set_field):
     """When two panes show the same field with different center_zero, ON snapshots the active pane.
 
     Existing ``test_clim_shared`` covers the OFF carry-back path but
@@ -131,8 +125,8 @@ def test_clim_shared_toggle_on_active_pane_wins(make_main_window):
     win = make_main_window()
     win._on_pane_layout(2)
     QCoreApplication.processEvents()
-    _set_field(win, 0, "tas_anomaly")
-    _set_field(win, 1, "tas_anomaly")
+    set_field(win, 0, "tas_anomaly")
+    set_field(win, 1, "tas_anomaly")
 
     # Drop shared mode so per-pane center_zero is meaningful, then
     # set conflicting values per pane.
@@ -168,14 +162,14 @@ def test_clim_shared_toggle_on_active_pane_wins(make_main_window):
 
 # ── PlaybackBar cursor label ──────────────────────────────────────────
 
-def test_cursor_label_updates_on_master_cursor_change(make_main_window):
+def test_cursor_label_updates_on_master_cursor_change(make_main_window, set_field):
     """Strip cursor label must render the current master cursor as short_datetime."""
     from icoscope.formatters import short_datetime
 
     win = make_main_window()
     win._on_pane_layout(1)
     QCoreApplication.processEvents()
-    _set_field(win, 0, "tas_t")
+    set_field(win, 0, "tas_t")
     times = win._times_for(win._file_state.file_fields["tas_t"])
 
     win._timeline_strip.cursor_changed.emit(times[3])
@@ -196,7 +190,7 @@ def test_cursor_label_updates_on_master_cursor_change(make_main_window):
 
 # ── File unload → reload behavioural regression ───────────────────────
 
-def test_clim_cache_fresh_after_close_reopen(make_main_window, synthetic_nc):
+def test_clim_cache_fresh_after_close_reopen(make_main_window, synthetic_nc, set_field):
     """Closing the file then reloading must compute clim from the new file's data.
 
     The clim cache is keyed by field name; if the same name appears in
@@ -208,7 +202,7 @@ def test_clim_cache_fresh_after_close_reopen(make_main_window, synthetic_nc):
     win = make_main_window()
     win._on_pane_layout(1)
     QCoreApplication.processEvents()
-    _set_field(win, 0, "tas_t")
+    set_field(win, 0, "tas_t")
     first_clim = win._clim(0)
     assert first_clim is not None
     assert "tas_t" in win._file_state.clim_cache
@@ -245,7 +239,7 @@ def test_clim_cache_fresh_after_close_reopen(make_main_window, synthetic_nc):
     win._activate_file_view()
     QCoreApplication.processEvents()
 
-    _set_field(win, 0, "tas_t")
+    set_field(win, 0, "tas_t")
     refreshed = win._clim(0)
     assert refreshed is not None
     assert "tas_t" in win._file_state.clim_cache, (
