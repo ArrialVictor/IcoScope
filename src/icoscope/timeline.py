@@ -1,19 +1,23 @@
 """Bottom timeline strip — per-pane sample tracks with a shared cursor.
 
-Multi-pane comparison view, Phase 1: replaces (when active) the
-side-panel time slider with N horizontally-stacked tracks, one per
-visible pane. Each track paints its time samples as dots on a single
-shared horizontal axis (the union of every visible pane's datetime
-domain), so a file mixing a daily field with a monthly field shows the
-daily samples clustered in a sub-range while the monthly ones spread
-across — the axis mismatch is visually obvious. A single vertical
-cursor crosses every track; clicking or dragging on any track moves
-the cursor and emits :attr:`TimelineStrip.cursor_changed` with the
-chosen datetime, which the window resolves to every pane via the
-existing master-cursor sync.
+Replaces (when active) the File-tab side-panel time slider with N
+horizontally-stacked tracks, one per visible pane. Each track paints
+its time samples as dots on a single shared horizontal axis (the
+union of every visible pane's datetime domain), so a file mixing a
+daily field with a monthly field shows the daily samples clustered in
+a sub-range while the monthly ones spread across — the axis mismatch
+is visually obvious. A single vertical cursor crosses every track;
+clicking or dragging on any track moves the cursor and emits
+:attr:`TimelineStrip.cursor_changed` with the chosen datetime, which
+the window resolves to every pane via the master-cursor sync.
 
-Per-track value displays, per-track time locks, and pane-selection
-via track click are deferred to Phase 2.
+Each :class:`Track` also carries a right-hand value column populated
+on cell pick, a lock button that pins the pane to its current
+datetime (so the master cursor skips it on subsequent scrubs), and a
+click-to-select behaviour on the label area routed to pane selection.
+The header :class:`PlaybackBar` owns play/speed controls; both live
+under one widget so the timeline UI is a single contiguous strip
+under the viewport.
 """
 from __future__ import annotations
 
@@ -45,7 +49,7 @@ PLAYBACK_UNITS = tuple(PLAYBACK_UNIT_SECONDS.keys())
 
 
 class PlaybackBar(QWidget):
-    """Header strip above the per-pane tracks: play + speed + loop.
+    """Header strip above the per-pane tracks: play + speed + cursor label.
 
     Owns the time-playback controls for the multi-pane File tab. Values
     are in *simulated time per real time* — "500 ms / day" means the

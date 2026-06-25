@@ -63,8 +63,8 @@ class _DisplayBlock(QWidget):
     The split mirrors how multi-pane mode divides the side panel: global
     settings (theme, overlays, autorotate, layout selector) live in one
     block; per-pane settings (Color by, vertical level, etc.) live in
-    another. Stage 1 of the multi-pane scaffold (this refactor) leaves
-    every existing caller on ``combined`` so behaviour is unchanged.
+    another. The File tab uses ``global`` + ``pane`` together to compose
+    its multi-pane side panel; the Ico and LonLat tabs use ``combined``.
     """
 
     _VALID_MODES = ("combined", "global", "pane")
