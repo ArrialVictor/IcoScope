@@ -2082,11 +2082,15 @@ class MainWindow(QMainWindow):
         items = ["None"] + list(c["fields"].keys())
         self.panel.file_tab.set_color_by_items(items)
         # Preserve the previously selected field on re-entry (tab switch back).
-        # Only fall back to the first field if there is no prior selection or
-        # it isn't in the current file's fields (e.g. after Open NetCDF on a
-        # different file).
+        # ``"None"`` is also a valid prior selection — either the user chose
+        # it explicitly, or _on_open_file just reset it on a fresh load
+        # (where we want the user to opt in to a field rather than have
+        # the first one in the dict auto-displayed). Only fall back to the
+        # first field when the prior is a stale field name that doesn't
+        # exist in the current file (rare — _on_open_file's reset
+        # normally prevents this).
         prior = self._file_state.color_by
-        if prior in c["fields"]:
+        if prior == "None" or prior in c["fields"]:
             desired = prior
         elif c["fields"]:
             desired = next(iter(c["fields"].keys()))
