@@ -153,13 +153,14 @@ def load_grid(
 
     flat_xyz = _lonlat_to_xyz(blon.reshape(-1), blat.reshape(-1))
     keys = np.round(flat_xyz, 8)
-    _, inverse = np.unique(keys, axis=0, return_inverse=True)
-    unique_first = np.array([np.where(inverse == u)[0][0]
-                             for u in np.unique(inverse)])
-    verts = flat_xyz[unique_first]
-    remap = -np.ones(int(inverse.max()) + 1, dtype=np.int64)
-    remap[np.unique(inverse)] = np.arange(len(unique_first))
-    inv2d = remap[inverse].reshape(n_cells, n_max)
+    # np.unique with return_index gives the first-occurrence index of each
+    # unique vertex directly; an earlier draft did a Python list-comp of
+    # np.where(inverse == u) which was O(n_unique × n_flat) — minutes on
+    # a 643k-cell ICOLMDZ grid (~1.2M unique × ~3.9M flat).
+    _, unique_idx, inverse = np.unique(
+        keys, axis=0, return_index=True, return_inverse=True)
+    verts = flat_xyz[unique_idx]
+    inv2d = inverse.reshape(n_cells, n_max)
 
     cells = []
     for row in inv2d:
@@ -536,6 +537,36 @@ def _read_field_using(
     if is_xios and data.ndim == 2:
         return _flatten_xios_field(data, xios_south_first)
     return data
+
+
+def iter_field_slabs(ds, name: str):
+    """Yield one slab per timestep (or one whole-array slab if static).
+
+    Each slab is a numpy array of every cell and every level for a single
+    timestep, with masked values replaced by NaN. Dimensionality is
+    preserved — 3-D for level-having fields, 2-D for level-less,
+    1-D for static — because callers using this helper (currently only
+    :meth:`MainWindow._compute_field_clim`) only need aggregate
+    statistics (``nanmin`` / ``nanmax``) and don't care about cell
+    ordering or per-level indexing.
+
+    Reading per-timestep instead of per-(time, level) collapses the
+    nested loop that drove ``_compute_field_clim``'s wall clock — one
+    netCDF slab per t covers every level + every cell in a single I/O
+    + a single numpy reduction.
+    """
+    if name not in ds.variables:
+        raise KeyError(f"field '{name}' not in {ds.filepath()}")
+    var = ds.variables[name]
+    dims = var.dimensions
+    has_time = bool(dims) and dims[0] in TIME_DIMS
+    n_time = var.shape[0] if has_time else 1
+    for t in range(n_time):
+        raw = var[t] if has_time else var[...]
+        if np.ma.isMaskedArray(raw):
+            yield np.ma.filled(raw.astype(float, copy=False), np.nan)
+        else:
+            yield np.asarray(raw)
 
 
 def _parse_times(ds, axis_name: str) -> np.ndarray | None:

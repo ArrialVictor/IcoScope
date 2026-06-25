@@ -7,7 +7,13 @@ import numpy as np
 import pytest
 from netCDF4 import Dataset
 
-from icoscope.loader import describe, load_grid, read_field, read_global_attrs
+from icoscope.loader import (
+    describe,
+    iter_field_slabs,
+    load_grid,
+    read_field,
+    read_global_attrs,
+)
 
 
 @pytest.fixture(scope="module")
@@ -85,6 +91,59 @@ def test_read_global_attrs_returns_str_dict(tmp_path):
     # All values are strings.
     for v in attrs.values():
         assert isinstance(v, str)
+
+
+def test_iter_field_slabs_static_yields_single_slab(test_nc):
+    """A static (no-time) field yields exactly one whole-array slab."""
+    with Dataset(test_nc) as ds:
+        slabs = list(iter_field_slabs(ds, "tas"))
+    assert len(slabs) == 1
+    assert slabs[0].shape == (4002,)
+
+
+def test_iter_field_slabs_time_varying_yields_per_timestep(test_nc):
+    """A time-varying field yields one slab per timestep, each covering all cells."""
+    with Dataset(test_nc) as ds:
+        n_time = ds.dimensions["time"].size
+        slabs = list(iter_field_slabs(ds, "tas_t"))
+    assert len(slabs) == n_time
+    for slab in slabs:
+        # tas_t is (time, cell) → each slab is 1-D over cells.
+        assert slab.shape == (4002,)
+
+
+def test_iter_field_slabs_min_max_matches_per_step_reads(test_nc):
+    """Aggregate min/max over slabs equals the same over per-step read_field reads.
+
+    Pins down the contract that ``_compute_field_clim`` relies on: the
+    fast path (one read per timestep) and the slow path (one read per
+    (time, level)) must produce the same global range. Without this
+    guarantee the clim-vectorization could silently shift the colour
+    range on real files.
+    """
+    with Dataset(test_nc) as ds:
+        n_time = ds.dimensions["time"].size
+        fast_lo, fast_hi = np.inf, -np.inf
+        for slab in iter_field_slabs(ds, "tas_t"):
+            fast_lo = min(fast_lo, float(np.nanmin(slab)))
+            fast_hi = max(fast_hi, float(np.nanmax(slab)))
+
+    slow_lo, slow_hi = np.inf, -np.inf
+    for t in range(n_time):
+        arr = read_field(test_nc, "tas_t", time_index=t)
+        slow_lo = min(slow_lo, float(np.nanmin(arr)))
+        slow_hi = max(slow_hi, float(np.nanmax(arr)))
+
+    assert fast_lo == slow_lo
+    assert fast_hi == slow_hi
+
+
+def test_iter_field_slabs_raises_keyerror_on_unknown_field(test_nc):
+    with (
+        Dataset(test_nc) as ds,
+        pytest.raises(KeyError, match="no_such_field"),
+    ):
+        list(iter_field_slabs(ds, "no_such_field"))
 
 
 def test_describe_prints_dimensions_and_variables(test_nc, capsys):
