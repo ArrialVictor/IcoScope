@@ -45,6 +45,36 @@ SYNTHETIC_UNITS = {
 }
 
 
+class _LevelSpinBox(QDoubleSpinBox):
+    """Discrete-axis QDoubleSpinBox: arrow keys / wheel move by level index.
+
+    Atmospheric level axes are typically non-uniform — LMDZ ``presnivs``
+    spans ~1000 hPa near the surface down to <1 hPa in the stratosphere
+    with gaps that grow from ~10 hPa to >100 hPa. A plain QDoubleSpinBox
+    with ``singleStep`` in display units (hPa here) overshoots the gap
+    in some regions: stepping down by 10 hPa from a level whose
+    next-lower neighbour is 30 hPa away lands on a value that's still
+    closer to the current level than to the next one, so the parent's
+    snap-to-nearest sends it right back. Manifests as a "wall" the user
+    can't arrow-key past — confusing.
+
+    This subclass overrides ``stepBy`` to emit a separate signal the
+    parent uses to advance the slider by one level index (in whichever
+    display direction the user asked for), bypassing the singleStep
+    arithmetic entirely. Typed input still goes through the normal
+    ``valueChanged`` → snap-to-nearest path so the user can jump to any
+    pressure.
+    """
+
+    levelStepRequested = Signal(int)
+
+    def stepBy(self, steps: int) -> None:  # type: ignore[override]
+        # Don't call super(); the default would mutate value by
+        # singleStep * steps and then trigger valueChanged, which would
+        # interfere with the index-based stepping below.
+        self.levelStepRequested.emit(steps)
+
+
 class _DisplayBlock(QWidget):
     """Standard display controls: Coloring + Overlays + Animation + Export.
 
@@ -115,8 +145,15 @@ class _DisplayBlock(QWidget):
         # modes; "global" ignores it because the global side panel never
         # shows time / level rows.
         self.with_time = with_time and mode in ("combined", "pane")
-        self._levels_pa = None  # populated by set_levels for file fields
-        self._levels_are_indices = False
+        # Vertical-level state populated by set_levels:
+        # - _levels_raw: the level array in the file's native units
+        # - _level_units: the units attribute as a plain string (may be "")
+        # - _level_display: the parsed display config from _classify_level_unit
+        #   (factor, suffix, decimals, single-step) — all formatting +
+        #   spinbox-vs-slider conversion derives from this struct
+        self._levels_raw = None
+        self._level_units = ""
+        self._level_display: dict | None = None
         v = QVBoxLayout(self)
         v.setContentsMargins(0, 0, 0, 0)
         # Group selection per mode. The animation group is split — global
@@ -347,13 +384,25 @@ class _DisplayBlock(QWidget):
         self.level_slider.setStyleSheet(SLIDER_STYLE)
         self.level_slider.valueChanged.connect(self._on_level_slider_changed)
         lrow.addWidget(self.level_slider, stretch=1)
-        self.level_value_label = QLabel("—")
-        # Width sized for 4-digit hPa values ("1024.0 hPa" is the widest
-        # realistic case for tropospheric pressure). 60 px clipped the
-        # number; 80 fits comfortably with the suffix.
-        self.level_value_label.setFixedSize(80, ROW_H)
-        self.level_value_label.setAlignment(Qt.AlignVCenter | Qt.AlignRight)
-        lrow.addWidget(self.level_value_label)
+        # Editable spinbox doubles as the value display and the type-in
+        # entry point: the user can drag the slider, or type the desired
+        # level value (e.g. "850" for the 850 hPa surface) and the slider
+        # snaps to the nearest available level. set_levels configures
+        # the range / suffix / decimals from the file's units attribute.
+        self.level_value_box = _LevelSpinBox()
+        # Fixed width sized for 4-digit values + suffix + spin arrows;
+        # 60 px clipped "1024.0 hPa" with the old QLabel.
+        self.level_value_box.setFixedSize(105, ROW_H)
+        self.level_value_box.setAlignment(Qt.AlignVCenter | Qt.AlignRight)
+        self.level_value_box.setKeyboardTracking(False)
+        self.level_value_box.setEnabled(False)
+        self.level_value_box.valueChanged.connect(
+            self._on_level_box_value_changed)
+        # Arrow keys / wheel go through a separate index-based path so
+        # they always move by exactly one level (see _LevelSpinBox).
+        self.level_value_box.levelStepRequested.connect(
+            self._on_level_box_step_requested)
+        lrow.addWidget(self.level_value_box)
         al.addWidget(self.level_row)
         self.level_row.setVisible(False)
 
@@ -503,51 +552,200 @@ class _DisplayBlock(QWidget):
         self.play_btn.setText("⏸" if on else "▶")
         self.play_toggled.emit(on)
 
-    def set_levels(self, levels_pa) -> None:
-        """Configure the level slider with ``presnivs`` values (Pa), or hide it.
+    def set_levels(self, levels, units: str = "") -> None:
+        """Configure the level slider + spinbox from the file's level axis.
 
-        Pass ``None`` or a length-≤1 array to hide the slider (used when the
-        active field has no vertical dim, or when no file is loaded). If the
-        values look like a contiguous integer index sequence (subsetted file
-        where the coord var was dropped), labels show ``level k`` instead of
-        a pressure.
+        ``levels`` is the raw values array in the file's native units;
+        ``units`` is the coord variable's ``units`` attribute (``"Pa"``
+        for LMDZ, ``"hPa"`` for some processed files, ``"m"`` / ``"km"``
+        for height coordinates, ``""`` when missing). The display
+        layer classifies these into a (factor, suffix, decimals)
+        config — see :meth:`_classify_level_unit` — so the spinbox
+        shows the value in the most natural unit (hPa for pressure,
+        km for tall height ranges, etc.) and the typed-value path can
+        snap to the nearest available level.
+
+        Pass ``None`` or a length-≤1 array to hide the slider (used
+        when the active field has no vertical dim, or when no file is
+        loaded). When the values look like a contiguous integer index
+        sequence (subsetted file where the coord var was dropped), the
+        spinbox shows raw indices.
         """
         if not self.with_time:
             return
-        if levels_pa is None or len(levels_pa) <= 1:
+        if levels is None or len(levels) <= 1:
             self.level_row.setVisible(False)
-            self._levels_pa = None
-            self._levels_are_indices = False
+            self._levels_raw = None
+            self._level_units = ""
+            self._level_display = None
+            self.level_value_box.setEnabled(False)
             self._refresh_anim_group_visibility()
             return
         import numpy as np
-        self._levels_pa = np.asarray(levels_pa, dtype=float)
-        self._levels_are_indices = bool(np.array_equal(
-            self._levels_pa, np.arange(len(self._levels_pa), dtype=float)))
+        self._levels_raw = np.asarray(levels, dtype=float)
+        self._level_units = units or ""
+        self._level_display = self._classify_level_unit(
+            self._levels_raw, self._level_units)
         self.level_row.setVisible(True)
         self._refresh_anim_group_visibility()
         self.level_slider.blockSignals(True)
-        self.level_slider.setRange(0, len(self._levels_pa) - 1)
+        self.level_slider.setRange(0, len(self._levels_raw) - 1)
         self.level_slider.setValue(0)
         self.level_slider.blockSignals(False)
+        # Configure the spinbox from the display config.
+        d = self._level_display
+        display_values = self._levels_raw * d["factor"]
+        self.level_value_box.blockSignals(True)
+        self.level_value_box.setDecimals(d["decimals"])
+        self.level_value_box.setSingleStep(d["step"])
+        self.level_value_box.setSuffix(d["suffix"])
+        lo = float(min(display_values))
+        hi = float(max(display_values))
+        # Range must be lo..hi but spinbox uses min..max; allow some
+        # slack so the user can type slightly outside (snap finds
+        # nearest anyway) without the spinbox clamping the typed text.
+        slack = max(abs(hi - lo) * 0.001, 1e-3)
+        self.level_value_box.setRange(lo - slack, hi + slack)
+        self.level_value_box.setEnabled(True)
+        self.level_value_box.blockSignals(False)
         self.set_level_label(0)
 
+    @staticmethod
+    def _classify_level_unit(values, units_attr: str) -> dict:
+        """Pick a display unit + format from a level array + units attribute.
+
+        Returns a dict with:
+            factor   — multiply a raw value to get the displayed value
+            suffix   — spinbox suffix (e.g. " hPa", " m", " (idx)", "")
+            decimals — spinbox decimal places
+            step     — spinbox single-step (in displayed units)
+
+        Rules (precedence top-down):
+            "Pa" / "pascal(s)"            → display in hPa
+            "hPa" / "mbar" / "millibar"   → display as-is in hPa
+            "km" / "kilometer(s)"         → display as-is in km
+            "m" / "meter(s)"              → display in km when max > 5000 m
+                                            (stratospheric heights), else m
+            "K" / "kelvin"                → display in K (isentropic θ)
+            "" / "1" / "level" / "index"  → integer index ("level k")
+            anything else                 → display raw with the original
+                                            ``units`` string as the suffix
+        """
+        import numpy as np
+        u = (units_attr or "").strip().lower()
+        max_abs = float(np.max(np.abs(np.asarray(values, dtype=float))))
+        if u in {"pa", "pascal", "pascals"}:
+            return {"factor": 1 / 100.0, "suffix": " hPa",
+                    "decimals": 1, "step": 10.0}
+        if u in {"hpa", "mbar", "millibar", "millibars"}:
+            return {"factor": 1.0, "suffix": " hPa",
+                    "decimals": 1, "step": 10.0}
+        if u in {"km", "kilometer", "kilometers"}:
+            return {"factor": 1.0, "suffix": " km",
+                    "decimals": 2, "step": 0.5}
+        if u in {"m", "meter", "metre", "meters", "metres"}:
+            if max_abs > 5000:
+                return {"factor": 1 / 1000.0, "suffix": " km",
+                        "decimals": 2, "step": 0.5}
+            return {"factor": 1.0, "suffix": " m",
+                    "decimals": 0, "step": 50.0}
+        if u in {"k", "kelvin"}:
+            return {"factor": 1.0, "suffix": " K",
+                    "decimals": 1, "step": 1.0}
+        # Dimensionless / unknown — show integer index unless the values
+        # span a wide non-integer range (rare unknown-unit case).
+        looks_like_index = u in {"", "1", "level", "index"} or bool(
+            np.array_equal(values, np.arange(len(values), dtype=float))
+        )
+        if looks_like_index:
+            return {"factor": 1.0, "suffix": " (idx)",
+                    "decimals": 0, "step": 1.0}
+        # Truly unknown units: pass them through verbatim with a sane
+        # default precision.
+        return {"factor": 1.0, "suffix": f" {units_attr}",
+                "decimals": 3, "step": max(max_abs / 100.0, 1e-3)}
+
     def set_level_label(self, idx: int) -> None:
-        """Update the value label next to the level slider for index ``idx``."""
-        if not self.with_time or self._levels_pa is None:
+        """Push level index ``idx``'s display value into the spinbox."""
+        if (not self.with_time or self._levels_raw is None
+                or self._level_display is None):
             return
-        if self._levels_are_indices:
-            self.level_value_label.setText(f"level {idx}")
+        if not (0 <= idx < len(self._levels_raw)):
             return
-        val_pa = float(self._levels_pa[idx])
-        # Pressure is conventionally shown in hPa; one decimal so adjacent
-        # upper-atmosphere levels (e.g. 1.4 hPa vs 1.0 hPa) stay distinct.
-        # Fall back to Pa below 100 Pa where .1 hPa would underflow to 0.0.
-        if val_pa >= 100.0:
-            self.level_value_label.setText(f"{val_pa / 100.0:.1f} hPa")
-        else:
-            self.level_value_label.setText(f"{val_pa:.1f} Pa")
+        display_val = float(self._levels_raw[idx]) * self._level_display["factor"]
+        self.level_value_box.blockSignals(True)
+        self.level_value_box.setValue(display_val)
+        self.level_value_box.blockSignals(False)
 
     def _on_level_slider_changed(self, idx: int) -> None:
         self.set_level_label(idx)
         self.level_changed.emit(idx)
+
+    def _on_level_box_value_changed(self, display_val: float) -> None:
+        """User typed a level value — snap the slider to the nearest match.
+
+        Updates the spinbox back to the snapped value (so the user sees
+        what they got) and emits ``level_changed`` so downstream code
+        re-renders. blockSignals around both child writes to avoid
+        re-entry into this handler.
+        """
+        if self._levels_raw is None or self._level_display is None:
+            return
+        import numpy as np
+        # Convert spinbox display value back to raw units to find the
+        # nearest level by absolute distance in the file's own scale.
+        target_raw = display_val / self._level_display["factor"]
+        idx = int(np.argmin(np.abs(self._levels_raw - target_raw)))
+        self.level_slider.blockSignals(True)
+        self.level_slider.setValue(idx)
+        self.level_slider.blockSignals(False)
+        # Snap the spinbox display back to the actual level value (so the
+        # user sees exactly which level they landed on, not their guess).
+        snapped = float(self._levels_raw[idx]) * self._level_display["factor"]
+        self.level_value_box.blockSignals(True)
+        self.level_value_box.setValue(snapped)
+        self.level_value_box.blockSignals(False)
+        self.level_changed.emit(idx)
+
+    def _on_level_box_step_requested(self, steps: int) -> None:
+        """Arrow-key / wheel step on the spinbox — move by one level index.
+
+        ``steps`` is +1 for one step UP (user pressed Up or scrolled
+        forward) and -1 for one step DOWN. We translate to a level-
+        index step in whichever direction increases / decreases the
+        *display value*, because that's what the user sees.
+
+        Crucially this bypasses ``singleStep`` and never goes through
+        the snap-to-nearest path, so non-uniform level spacing can't
+        leave the user stuck at a "wall" (the bug the dedicated path
+        was added to fix).
+        """
+        if self._levels_raw is None or self._level_display is None:
+            return
+        if len(self._levels_raw) == 0:
+            return
+        import numpy as np
+        cur_idx = self.level_slider.value()
+        all_display = (
+            np.asarray(self._levels_raw, dtype=float)
+            * self._level_display["factor"]
+        )
+        cur_display = float(all_display[cur_idx])
+        if steps > 0:
+            # User wants a HIGHER display value — find the smallest
+            # display value that's still strictly greater than current.
+            mask = all_display > cur_display
+            if not mask.any():
+                return
+            higher = all_display[mask]
+            new_display = float(np.min(higher))
+        else:
+            mask = all_display < cur_display
+            if not mask.any():
+                return
+            lower = all_display[mask]
+            new_display = float(np.max(lower))
+        new_idx = int(np.argmin(np.abs(all_display - new_display)))
+        # Route through the slider so the existing slider-driven path
+        # (set_level_label + level_changed emit) runs once.
+        self.level_slider.setValue(new_idx)

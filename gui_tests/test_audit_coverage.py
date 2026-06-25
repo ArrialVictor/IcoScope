@@ -217,10 +217,14 @@ def test_clim_cache_fresh_after_close_reopen(make_main_window, synthetic_nc, set
     import numpy as np
     from icoscope.loader import FileContext, load_grid, read_levels
     f_verts, f_cells, f_centers, fields = load_grid(str(synthetic_nc))
-    levels = read_levels(str(synthetic_nc))
+    levels_result = read_levels(str(synthetic_nc))
+    levels, level_units = (
+        levels_result if levels_result is not None else (None, "")
+    )
     win.file_path = str(synthetic_nc)
     win._file_state.file_fields = fields
     win._file_state.file_levels = levels
+    win._file_state.file_level_units = level_units
     for pane in win._file_state.panes:
         pane.color_by = "None"
         pane.time_index = 0

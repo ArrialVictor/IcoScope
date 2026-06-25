@@ -122,10 +122,14 @@ def test_file_open_keeps_pane0_color_by_at_none(make_main_window, synthetic_nc):
         pane.time_index = 0
         pane.level_index = 0
     f_verts, f_cells, f_centers, fields = load_grid(str(synthetic_nc))
-    levels = read_levels(str(synthetic_nc))
+    levels_result = read_levels(str(synthetic_nc))
+    levels, level_units = (
+        levels_result if levels_result is not None else (None, "")
+    )
     win.file_path = str(synthetic_nc)
     win._file_state.file_fields = fields
     win._file_state.file_levels = levels
+    win._file_state.file_level_units = level_units
     win._file_cache = {
         "path": str(synthetic_nc),
         "verts": f_verts,

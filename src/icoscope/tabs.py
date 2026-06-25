@@ -621,9 +621,9 @@ class FileTab(QWidget):
         """Forward to the inner display block."""
         self.display.set_time_label(idx)
 
-    def set_levels(self, levels_pa) -> None:
+    def set_levels(self, levels, units: str = "") -> None:
         """Forward to the inner display block."""
-        self.display.set_levels(levels_pa)
+        self.display.set_levels(levels, units)
 
     def set_level_label(self, idx: int) -> None:
         """Forward to the inner display block."""
