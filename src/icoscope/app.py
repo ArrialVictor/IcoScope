@@ -2103,6 +2103,17 @@ class MainWindow(QMainWindow):
         # the user having to scrub each pane's slider.
         if idx == self.pane_state.time_index:
             return
+        # A locked pane must stay pinned regardless of UI entry point.
+        # Snap the slider back to the pane's frozen index so the slider
+        # position and the pane data stay in agreement; the user has to
+        # click the timeline lock button to release before scrubbing.
+        if self.pane_state.time_locked:
+            slider = self.panel.file_tab.display_pane.time_slider
+            slider.blockSignals(True)
+            slider.setValue(self.pane_state.time_index)
+            slider.blockSignals(False)
+            self.panel.file_tab.set_time_label(self.pane_state.time_index)
+            return
         self.pane_state.time_index = idx
         meta = self._file_state.file_fields.get(self.pane_state.color_by)
         if meta:
