@@ -16,9 +16,18 @@ qapp
     is slow and macOS sometimes refuses a second NSApplication, so we
     reuse a single instance for the whole session.
 make_main_window
-    Factory that returns a configured :class:`MainWindow` with a fresh
-    synthetic ICOLMDZ NetCDF loaded into the File tab. Tests get a
-    realistic 4-pane-capable window without any GUI interaction.
+    Function-scoped factory that returns a configured :class:`MainWindow`
+    with a fresh synthetic ICOLMDZ NetCDF loaded into the File tab. Use
+    this when a test needs full isolation (the default).
+make_module_window
+    Module-scoped variant of the above. Use this in a module-scoped
+    setup fixture when the construction cost dominates the test body
+    and the per-test mutations can be cleanly reset (see
+    ``test_timeline_strip_phase2.py`` for the pattern). Tears down once
+    at end-of-module.
+set_field
+    Session-scoped callable: ``set_field(win, pane_idx, field)`` selects
+    the pane, changes its ``color_by``, and drains the event queue.
 
 Usage
 -----
@@ -65,69 +74,115 @@ def synthetic_nc(tmp_path_factory) -> Path:
     return out
 
 
-@pytest.fixture
-def make_main_window(qapp, synthetic_nc) -> Iterator:
-    """Yield a factory that builds a configured :class:`MainWindow`.
+def _build_main_window(synthetic_nc: Path):
+    """Construct a configured :class:`MainWindow` with the synthetic file loaded.
 
-    The factory loads the synthetic NetCDF into the File tab and shows
-    the window before returning. Multiple calls inside one test are
-    supported (e.g. testing two independent sessions), but typical usage
-    is one window per test.
-
-    The window is closed and the synthetic NetCDF FileContext is freed
-    when the test finishes, so each test starts clean.
+    Shared internals for the :func:`make_main_window` and
+    :func:`make_module_window` factories; not a fixture itself so both
+    can call it without scope mismatch.
     """
     from icoscope.app import MainWindow
     from icoscope.grid import goldberg
     from icoscope.loader import FileContext, load_grid, read_levels
     from icoscope.tabs import Tab
 
+    verts, cells, centers, _ = goldberg(8, relax=True)
+    win = MainWindow(verts, cells, np.asarray(centers), initial_n=8)
+
+    f_verts, f_cells, f_centers, fields = load_grid(str(synthetic_nc))
+    levels = read_levels(str(synthetic_nc))
+    win.file_path = str(synthetic_nc)
+    win._file_state.file_fields = fields
+    win._file_state.file_levels = levels
+    win._file_cache = {
+        "path": str(synthetic_nc),
+        "verts": f_verts,
+        "cells": f_cells,
+        "centers": np.asarray(f_centers),
+        "fields": fields,
+        "levels": levels,
+        "context": FileContext(str(synthetic_nc)),
+    }
+    win.panel.file_tab.set_file_loaded(True)
+    win._sync_file_info(str(synthetic_nc))
+    win._activate_file_view()
+    win.panel.tabs.setCurrentIndex(Tab.FILE)
+    win.show()
+    QCoreApplication.processEvents()
+    return win
+
+
+def _teardown_main_window(win) -> None:
+    """Free the synthetic NetCDF FileContext and hide the window.
+
+    Hides instead of closing — closing tears down the QtInteractor render
+    windows in a way subsequent ``processEvents`` calls can't recover
+    from (segfault on macOS).
+    """
+    ctx = (win._file_cache or {}).get("context")
+    if ctx is not None and hasattr(ctx, "close"):
+        try:
+            ctx.close()
+        except Exception:
+            pass
+    win.hide()
+
+
+@pytest.fixture
+def make_main_window(qapp, synthetic_nc) -> Iterator:
+    """Function-scoped factory that builds a configured :class:`MainWindow`.
+
+    The factory loads the synthetic NetCDF into the File tab and shows
+    the window before returning. Multiple calls inside one test are
+    supported, but typical usage is one window per test.
+
+    The window is hidden and the synthetic NetCDF FileContext is freed
+    when the test finishes, so each test starts clean.
+    """
     created: list = []
 
     def _build():
-        verts, cells, centers, _ = goldberg(8, relax=True)
-        win = MainWindow(verts, cells, np.asarray(centers), initial_n=8)
-
-        f_verts, f_cells, f_centers, fields = load_grid(str(synthetic_nc))
-        levels = read_levels(str(synthetic_nc))
-        win.file_path = str(synthetic_nc)
-        win._file_state.file_fields = fields
-        win._file_state.file_levels = levels
-        win._file_cache = {
-            "path": str(synthetic_nc),
-            "verts": f_verts,
-            "cells": f_cells,
-            "centers": np.asarray(f_centers),
-            "fields": fields,
-            "levels": levels,
-            "context": FileContext(str(synthetic_nc)),
-        }
-        win.panel.file_tab.set_file_loaded(True)
-        win._sync_file_info(str(synthetic_nc))
-        win._activate_file_view()
-        win.panel.tabs.setCurrentIndex(Tab.FILE)
-        win.show()
-        QCoreApplication.processEvents()
+        win = _build_main_window(synthetic_nc)
         created.append(win)
         return win
 
     yield _build
 
-    # Hide windows in teardown but do NOT call ``win.close()``. Closing
-    # tears down the QtInteractor render windows in a way subsequent
-    # processEvents calls can't recover from (segfault on macOS).
-    # ``hide()`` is safe — the window stays in memory until process exit
-    # but is removed from screen, so running the full suite doesn't
-    # accumulate 20+ visible MainWindows that the user then has to close
-    # by hand (each manual close triggers the VTK crash mid-test).
     for win in created:
-        ctx = (win._file_cache or {}).get("context")
-        if ctx is not None and hasattr(ctx, "close"):
-            try:
-                ctx.close()
-            except Exception:
-                pass
-        win.hide()
+        _teardown_main_window(win)
+    QCoreApplication.processEvents()
+    created.clear()
+
+
+@pytest.fixture(scope="module")
+def make_module_window(qapp, synthetic_nc) -> Iterator:
+    """Module-scoped variant of :func:`make_main_window`.
+
+    Returns a callable that builds ONE window for every test in the
+    module to share. Tear-down happens after every test in the module
+    has run, not after each individual test.
+
+    Use this only when:
+    - the per-test construction cost (~1 s of Qt + ~2-3 s of PyVista
+      ``add_mesh`` per pane) dominates the test body,
+    - **and** the per-test mutations can be cleanly reset back to the
+      shared configured state (see the autouse reset fixture pattern
+      in ``test_timeline_strip_phase2.py``).
+
+    Otherwise prefer :func:`make_main_window` — fresh-per-test is the
+    safer default.
+    """
+    created: list = []
+
+    def _build():
+        win = _build_main_window(synthetic_nc)
+        created.append(win)
+        return win
+
+    yield _build
+
+    for win in created:
+        _teardown_main_window(win)
     QCoreApplication.processEvents()
     created.clear()
 
@@ -139,17 +194,14 @@ def tmp_export_dir() -> Iterator[Path]:
         yield Path(td)
 
 
-@pytest.fixture
+@pytest.fixture(scope="session")
 def set_field():
     """Helper: select a pane, change its ``color_by``, drain the event queue.
 
-    Eight test files previously defined an identical local copy of this
-    two-line wrapper. Centralising it here cuts the duplication and
-    means future tweaks (like the previous ``processEvents`` drop) only
-    need editing in one place.
-
-    ``_select_pane`` is synchronous (no signals fire), so only one
-    drain at the end is required.
+    Session-scoped because the returned callable is stateless — sharing
+    it lets module-scoped fixtures depend on it without a scope
+    mismatch. ``_select_pane`` is synchronous (no signals fire), so only
+    one ``processEvents`` drain at the end is required.
     """
     def _set(win, pane_idx: int, field: str) -> None:
         win._select_pane(pane_idx)

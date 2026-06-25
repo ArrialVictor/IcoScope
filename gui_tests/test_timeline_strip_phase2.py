@@ -1,12 +1,35 @@
-"""Timeline strip Phase 2 — per-track value display, lock, label-click."""
+"""Timeline strip Phase 2 — per-track value display, lock, label-click.
+
+Setup pattern
+-------------
+Every test in this module needs the same 2-pane File-tab configuration
+(pane 0 = ``tas_t`` monthly, pane 1 = ``tas_daily``). The per-test cost
+of building that — Qt window + 2× PyVista ``add_mesh`` for each field
+swap — was 15-20 s before this refactor. The fixtures below share one
+configured window for the whole module and reset per-test mutations
+(cursor, lock state, pick state) before each test runs.
+
+If a future test in this file needs a *different* setup, it can still
+take ``make_main_window`` directly and bypass the module fixture; the
+autouse reset only runs when ``phase2_setup`` is in the dependency
+graph.
+"""
 from __future__ import annotations
 
+import numpy as np
+import pytest
 from qtpy.QtCore import QCoreApplication
 
 
-def _setup_two_panes(win, set_field) -> int:
-    """2-pane File-tab, pane 1=tas_t (monthly), pane 2=tas_daily. Returns cell idx."""
-    import numpy as np
+@pytest.fixture(scope="module")
+def phase2_setup(make_module_window, set_field):
+    """Module-scoped 2-pane window. Returns ``(win, cell_idx)``.
+
+    Built once and shared across every test in this module. Per-test
+    mutations are undone by the autouse :func:`_reset_phase2_state`
+    fixture below.
+    """
+    win = make_module_window()
     win._on_pane_layout(2)
     QCoreApplication.processEvents()
     set_field(win, 0, "tas_t")
@@ -15,13 +38,45 @@ def _setup_two_panes(win, set_field) -> int:
     centers = np.asarray(win.centers)
     lats = np.degrees(np.arcsin(np.clip(centers[:, 2], -1, 1)))
     lons = np.degrees(np.arctan2(centers[:, 1], centers[:, 0]))
-    return int(np.argmin(lats ** 2 + lons ** 2))
+    cell = int(np.argmin(lats ** 2 + lons ** 2))
+    return win, cell
 
 
-def test_pick_populates_value_column_on_every_track(make_main_window, set_field):
+@pytest.fixture(autouse=True)
+def _reset_phase2_state(phase2_setup):
+    """Put the shared window back to pristine state before each test.
+
+    Tests can mutate: pick state, pane selection, lock state on either
+    pane, master cursor, per-pane ``time_index``. The reset undoes all
+    of these without touching ``color_by`` (so the shared 2-pane field
+    configuration survives).
+
+    Done as ``yield``-before-body so a previous test's crash can't
+    contaminate the current one — every test starts from a known
+    reference state.
+    """
+    win, _ = phase2_setup
+    # Clear pick + selection (also clears per-track value_text via
+    # _refresh_timeline_pane_values).
+    win._clear_pick_state(render=False, deselect_pane=True)
+    # Unlock both panes if any test left them locked.
+    for i in range(2):
+        if win.state.panes[i].time_locked:
+            win._on_timeline_lock_toggled(i)
+    # Reset master cursor → clears banners + per-track cursor visuals.
+    win._set_master_cursor(None)
+    # _set_master_cursor doesn't touch time_index when cursor is None,
+    # so reset the per-pane indices by hand.
+    win.state.panes[0].time_index = 0
+    win.state.panes[1].time_index = 0
+    win._render_visible_panes()
+    QCoreApplication.processEvents()
+    yield
+
+
+def test_pick_populates_value_column_on_every_track(phase2_setup):
     """A cell pick surfaces a per-pane value on every track's value column."""
-    win = make_main_window()
-    cell = _setup_two_panes(win, set_field)
+    win, cell = phase2_setup
     win._select_pane(0)
     QCoreApplication.processEvents()
 
@@ -41,10 +96,9 @@ def test_pick_populates_value_column_on_every_track(make_main_window, set_field)
     assert "K" in tracks[1].value_text
 
 
-def test_lock_prevents_cursor_propagation(make_main_window, set_field):
+def test_lock_prevents_cursor_propagation(phase2_setup):
     """Locking pane 2 pins its time_index while the cursor advances."""
-    win = make_main_window()
-    _setup_two_panes(win, set_field)
+    win, _ = phase2_setup
     win._select_pane(0)
     QCoreApplication.processEvents()
 
@@ -65,10 +119,9 @@ def test_lock_prevents_cursor_propagation(make_main_window, set_field):
         "locked pane must not move with the cursor"
 
 
-def test_label_click_selects_pane(make_main_window, set_field):
+def test_label_click_selects_pane(phase2_setup):
     """Clicking a track's label region routes to _select_pane."""
-    win = make_main_window()
-    _setup_two_panes(win, set_field)
+    win, _ = phase2_setup
     win._select_pane(0)
     QCoreApplication.processEvents()
     assert win._selected_pane == 0
@@ -79,15 +132,14 @@ def test_label_click_selects_pane(make_main_window, set_field):
     assert win._selected_pane == 1
 
 
-def test_lock_state_persists_across_layout_refresh(make_main_window, set_field):
+def test_lock_state_persists_across_layout_refresh(phase2_setup, set_field):
     """Rebuilding tracks (e.g. color_by change) must preserve lock visuals."""
-    win = make_main_window()
-    _setup_two_panes(win, set_field)
+    win, _ = phase2_setup
     win._on_timeline_lock_toggled(1)
     QCoreApplication.processEvents()
     assert win._timeline_strip.tracks[1].locked is True
 
-    # Force a rebuild by changing pane 1's color_by — _refresh_timeline_strip
+    # Force a rebuild by re-setting pane 1's color_by — _refresh_timeline_strip
     # runs and re-creates the tracks if pane count changed (it didn't, but
     # the lock-restore loop runs unconditionally).
     set_field(win, 0, "tas_t")
@@ -96,15 +148,14 @@ def test_lock_state_persists_across_layout_refresh(make_main_window, set_field):
         "lock visual must survive a strip rebuild"
 
 
-def test_locked_track_cursor_stays_at_pinned_time(make_main_window, set_field):
+def test_locked_track_cursor_stays_at_pinned_time(phase2_setup):
     """The cursor bar on a locked track must not follow the master cursor.
 
     Regression: previously the strip pushed one shared cursor to every
     track, so a locked pane's data stayed pinned but its cursor bar
     drifted with the master — confusingly out of sync with the data.
     """
-    win = make_main_window()
-    _setup_two_panes(win, set_field)
+    win, _ = phase2_setup
     win._select_pane(0)
     QCoreApplication.processEvents()
 
@@ -126,10 +177,9 @@ def test_locked_track_cursor_stays_at_pinned_time(make_main_window, set_field):
         "locked track cursor must stay at the pinned datetime"
 
 
-def test_unlocking_jumps_track_cursor_and_data_to_master(make_main_window, set_field):
+def test_unlocking_jumps_track_cursor_and_data_to_master(phase2_setup):
     """Unlocking snaps both the cursor visual AND the pane data to master."""
-    win = make_main_window()
-    _setup_two_panes(win, set_field)
+    win, _ = phase2_setup
     win._select_pane(0)
     QCoreApplication.processEvents()
 
@@ -151,10 +201,9 @@ def test_unlocking_jumps_track_cursor_and_data_to_master(make_main_window, set_f
         "unlocking must snap the track cursor back to the master"
 
 
-def test_cursor_clears_value_column(make_main_window, set_field):
+def test_cursor_clears_value_column(phase2_setup):
     """Empty-click / Escape clears the pick → value column hides."""
-    win = make_main_window()
-    cell = _setup_two_panes(win, set_field)
+    win, cell = phase2_setup
     win._select_pane(0)
     QCoreApplication.processEvents()
     win._on_pane_pick(0, cell, lon=0.0, lat=0.0)
