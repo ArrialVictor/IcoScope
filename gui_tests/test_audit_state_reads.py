@@ -95,6 +95,86 @@ def test_theme_change_updates_every_pane_cmap(make_main_window):
         )
 
 
+def test_file_open_keeps_pane0_color_by_at_none(make_main_window, synthetic_nc):
+    """Opening a file must NOT auto-select the first field for pane 0.
+
+    Regression: _on_open_file resets every pane to color_by="None" but
+    _activate_file_view used to fall through its "preserve prior" check
+    (None never matches a field name) and assign the first field in the
+    dict to pane 0. Users opening an unfamiliar file would see a random
+    field auto-displayed instead of a blank canvas to opt in from.
+    """
+    import numpy as np
+    from icoscope.loader import FileContext, load_grid, read_levels
+    from icoscope.tabs import Tab
+
+    win = make_main_window()
+    # Replicate the _on_open_file path without QFileDialog. Reuses the
+    # same synthetic NetCDF the make_main_window fixture loaded — we
+    # just walk through the open sequence to verify color_by stays
+    # "None" after _activate_file_view runs.
+    if win._file_cache is not None:
+        ctx = win._file_cache.get("context")
+        if ctx is not None:
+            ctx.close()
+    for pane in win._file_state.panes:
+        pane.color_by = "None"
+        pane.time_index = 0
+        pane.level_index = 0
+    f_verts, f_cells, f_centers, fields = load_grid(str(synthetic_nc))
+    levels = read_levels(str(synthetic_nc))
+    win.file_path = str(synthetic_nc)
+    win._file_state.file_fields = fields
+    win._file_state.file_levels = levels
+    win._file_cache = {
+        "path": str(synthetic_nc),
+        "verts": f_verts,
+        "cells": f_cells,
+        "centers": np.asarray(f_centers),
+        "fields": fields,
+        "levels": levels,
+        "context": FileContext(str(synthetic_nc)),
+    }
+    win.panel.file_tab.set_file_loaded(True)
+    win._sync_file_info(str(synthetic_nc))
+    win._activate_file_view()
+    win.panel.tabs.setCurrentIndex(Tab.FILE)
+    QCoreApplication.processEvents()
+
+    assert win._file_state.panes[0].color_by == "None", (
+        "fresh file open must leave pane 0 at color_by='None' so the "
+        "user opts in to a field rather than being shown an arbitrary "
+        f"auto-selected one (got {win._file_state.panes[0].color_by!r})"
+    )
+
+
+def test_tab_switch_back_to_file_preserves_prior_color_by(make_main_window, set_field):
+    """Switching tabs out of File and back must NOT lose the picked color_by.
+
+    The same _activate_file_view path now used by file-open also fires on
+    tab-switch-back. The fix has to honour ``None`` as a valid prior
+    selection but must still preserve real field names — this test
+    pins down the preserve-real-field side.
+    """
+    from icoscope.tabs import Tab
+
+    win = make_main_window()
+    win._on_pane_layout(1)
+    QCoreApplication.processEvents()
+    set_field(win, 0, "tas_t")
+
+    # Switch away, then back to File.
+    win.panel.tabs.setCurrentIndex(Tab.ICO)
+    QCoreApplication.processEvents()
+    win.panel.tabs.setCurrentIndex(Tab.FILE)
+    QCoreApplication.processEvents()
+
+    assert win._file_state.panes[0].color_by == "tas_t", (
+        "tab-switch back to File must preserve the previously-picked "
+        f"field, not auto-select (got {win._file_state.panes[0].color_by!r})"
+    )
+
+
 def test_file_close_resets_color_by_on_every_pane(make_main_window, set_field):
     """Closing the file clears color_by on every pane, not just pane 1.
 
