@@ -24,6 +24,7 @@ from . import export as _export
 from . import menubar as _menubar
 from .coastlines import coastline_polydata
 from .controls import ControlPanel
+from .formatters import format_cell_value, short_datetime
 from .graticule import graticule_polydata
 from .grid import goldberg
 from .lonlat import lonlat_mesh
@@ -32,6 +33,7 @@ from .picker import Picker
 from .playback import Playback
 from .tabs import Tab
 from .themes import CMAPS, THEMES
+from .time_axis import is_in_range, last_previous_time_index
 from .timeline import TimelineStrip
 
 
@@ -978,7 +980,6 @@ class MainWindow(QMainWindow):
 
         Kept as a method so existing call sites in this module stay short.
         """
-        from .formatters import format_cell_value
         return format_cell_value(value, units)
 
     def _set_cell_value(self, cell_idx, lon=None, lat=None):
@@ -2186,7 +2187,6 @@ class MainWindow(QMainWindow):
         silently showing stale-looking data. Cleared when in-range or
         when no cursor / no time axis applies.
         """
-        from .time_axis import is_in_range
         pane_widget = self._pane_container.pane(pane_idx)
         pane = self.state.panes[pane_idx]
         cursor = self._file_state.time_cursor
@@ -2200,7 +2200,6 @@ class MainWindow(QMainWindow):
         if not (0 <= pane.time_index < len(times)):
             pane_widget.set_banner(None)
             return
-        from .formatters import short_datetime
         nearest = times[pane.time_index]
         pane_widget.set_banner(
             f"Showing {short_datetime(nearest)} "
@@ -2221,7 +2220,6 @@ class MainWindow(QMainWindow):
         no time axis, or the axis can't be parsed. Caller is responsible
         for writing the result back to ``pane.time_index``.
         """
-        from .time_axis import last_previous_time_index
         cursor = self._file_state.time_cursor
         if cursor is None:
             return 0
@@ -2264,12 +2262,18 @@ class MainWindow(QMainWindow):
         timeline strip's cursor marker + per-pane value column are
         updated.
         """
-        from .time_axis import last_previous_time_index
         self._file_state.time_cursor = cursor
+        # Cache field→times so two panes sharing a color_by (the common
+        # multi-pane shape) don't resolve the axis twice. _get_field_times
+        # is cheap but does dict lookups + a function call per use.
+        times_by_field: dict = {}
         for i in range(self._pane_container.n_visible):
             pane = self.state.panes[i]
             if cursor is not None and not pane.time_locked:
-                times = self._get_field_times(pane.color_by)
+                if pane.color_by not in times_by_field:
+                    times_by_field[pane.color_by] = self._get_field_times(
+                        pane.color_by)
+                times = times_by_field[pane.color_by]
                 if times is not None:
                     new_idx = last_previous_time_index(cursor, times)
                     if new_idx != pane.time_index:
@@ -2327,7 +2331,6 @@ class MainWindow(QMainWindow):
             return
         cell_idx, _lon, _lat = self._last_pick
         values: list[str] = []
-        from .formatters import format_cell_value
         for i in range(self._pane_container.n_visible):
             arr = self._pane_scalars[i]
             pane = self.state.panes[i]
@@ -2417,7 +2420,6 @@ class MainWindow(QMainWindow):
         # Right-edge cursor datetime label on the strip — replaces the
         # side panel's "datetime under the time slider" that retired
         # along with the time row in pane mode.
-        from .formatters import short_datetime
         text = short_datetime(master) if master is not None else ""
         self._timeline_strip.playback_bar.set_cursor_label(text)
 
