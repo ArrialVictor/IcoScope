@@ -12,8 +12,7 @@ from qtpy.QtCore import QCoreApplication
 
 
 def _set_field(win, pane_idx: int, field: str) -> None:
-    win._select_pane(pane_idx)
-    QCoreApplication.processEvents()
+    win._select_pane(pane_idx)        # synchronous; no events to drain
     win._on_color_by(field)
     QCoreApplication.processEvents()
 
