@@ -7,7 +7,7 @@ import pytest
 from netCDF4 import Dataset
 
 from icoscope.loader import _flatten_dyn3d_field, load_grid, read_field
-from icoscope.lonlat import latlon_mesh
+from icoscope.lonlat import lonlat_mesh
 
 
 def _make_dyn3d_nc(path: Path, iim: int, jjm: int, with_time: bool = False) -> None:
@@ -139,7 +139,7 @@ def test_synthetic_lonlat_mesh_matches_field_count():
     agree, so a field generated against the synthetic mesh shape matches the
     loader-rebuilt mesh shape."""
     iim, jjm = 12, 8
-    verts_s, cells_s, _ = latlon_mesh(iim=iim, jjm=jjm)
+    verts_s, cells_s, _ = lonlat_mesh(iim=iim, jjm=jjm)
     with tempfile.NamedTemporaryFile(suffix=".nc", delete=False) as f:
         path = Path(f.name)
     try:

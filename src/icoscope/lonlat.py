@@ -348,7 +348,7 @@ def _tanh_coord_1d(
         ``rlatv`` (the *band* boundaries) plays the role of ``centers``
         (length ``jjm``, interior-only). The caller passes them to
         ``build_mesh_from_arrays`` in that role-swapped order — see
-        ``latlon_mesh``.
+        ``lonlat_mesh``.
     """
     pi_d = float(half_domain)        # π or π/2
     full = 2.0 * pi_d                 # 2π or π
@@ -461,7 +461,7 @@ def _tanh_coord_1d(
     return edges_arr, centers_arr
 
 
-def latlon_mesh(
+def lonlat_mesh(
     iim: int = 96,
     jjm: int = 95,
     clon: float = 0.0,

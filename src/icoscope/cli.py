@@ -4,7 +4,7 @@ import sys
 import time
 
 from .grid import goldberg
-from .lonlat import latlon_mesh
+from .lonlat import lonlat_mesh
 
 
 def _step(msg: str) -> float:
@@ -94,7 +94,7 @@ def main() -> None:
             )
     elif args.grid == "lonlat":
         t1 = log(f"building synthetic lat-lon grid iim={args.iim}, jjm={args.jjm}")
-        verts, cells, centers = latlon_mesh(
+        verts, cells, centers = lonlat_mesh(
             iim=args.iim, jjm=args.jjm,
             clon=args.lmdz_clon, clat=args.lmdz_clat,
             grossismx=args.lmdz_grossismx, grossismy=args.lmdz_grossismy,

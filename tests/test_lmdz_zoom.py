@@ -2,7 +2,7 @@
 import numpy as np
 import pytest
 
-from icoscope.lonlat import latlon_mesh
+from icoscope.lonlat import lonlat_mesh
 
 
 def _cell_area(verts: np.ndarray, cell: list[int]) -> float:
@@ -21,8 +21,8 @@ def _cell_area(verts: np.ndarray, cell: list[int]) -> float:
 
 def test_identity_matches_unzoomed():
     """grossismx == grossismy == 1.0 must reproduce the uniform mesh exactly."""
-    v0, c0, ctr0 = latlon_mesh(iim=24, jjm=20)
-    v1, c1, ctr1 = latlon_mesh(iim=24, jjm=20,
+    v0, c0, ctr0 = lonlat_mesh(iim=24, jjm=20)
+    v1, c1, ctr1 = lonlat_mesh(iim=24, jjm=20,
                                 clon=12.0, clat=-30.0,
                                 grossismx=1.0, grossismy=1.0,
                                 dzoomx=0.1, dzoomy=0.1,
@@ -36,7 +36,7 @@ def test_focal_region_has_smaller_cells():
     """With a non-identity zoom, cells nearest the focal point are smaller."""
     iim, jjm = 60, 40
     clon, clat = 2.0, 48.0
-    v, cells, centers = latlon_mesh(
+    v, cells, centers = lonlat_mesh(
         iim=iim, jjm=jjm,
         clon=clon, clat=clat,
         grossismx=4.0, grossismy=4.0,
@@ -64,7 +64,7 @@ def test_validity_error_is_raised():
     """grossism · dzoom too large → LMDZ's validity check should reject."""
     # grossism * dzoom_frac ≈ 1.0 → very wide zoom that violates 2β - G > 0.
     with pytest.raises(ValueError, match="Decrease dzoomx or grossismx"):
-        latlon_mesh(iim=20, jjm=20,
+        lonlat_mesh(iim=20, jjm=20,
                     grossismx=20.0, grossismy=1.0,
                     dzoomx=0.49, dzoomy=0.0,
                     taux=3.0, tauy=3.0)
@@ -73,8 +73,8 @@ def test_validity_error_is_raised():
 def test_total_area_conserved():
     """Sum of cell areas is the same with or without zoom (sphere is still a sphere)."""
     iim, jjm = 36, 24
-    v0, c0, _ = latlon_mesh(iim=iim, jjm=jjm)
-    v1, c1, _ = latlon_mesh(iim=iim, jjm=jjm,
+    v0, c0, _ = lonlat_mesh(iim=iim, jjm=jjm)
+    v1, c1, _ = lonlat_mesh(iim=iim, jjm=jjm,
                              clon=10.0, clat=20.0,
                              grossismx=3.0, grossismy=2.0,
                              dzoomx=0.1, dzoomy=0.1,
@@ -88,8 +88,8 @@ def test_total_area_conserved():
 def test_topology_preserved():
     """Zoom keeps cell count, polar-triangle count, and pole-vertex degree."""
     iim, jjm = 30, 18
-    v0, c0, _ = latlon_mesh(iim=iim, jjm=jjm)
-    v1, c1, _ = latlon_mesh(iim=iim, jjm=jjm,
+    v0, c0, _ = lonlat_mesh(iim=iim, jjm=jjm)
+    v1, c1, _ = lonlat_mesh(iim=iim, jjm=jjm,
                              clon=15.0, clat=30.0,
                              grossismx=2.5, grossismy=2.5,
                              dzoomx=0.1, dzoomy=0.1,
@@ -102,7 +102,7 @@ def test_topology_preserved():
 
 def test_vertices_stay_on_unit_sphere():
     """All vertices and centers of a zoomed mesh sit on the unit sphere."""
-    v, cells, centers = latlon_mesh(
+    v, cells, centers = lonlat_mesh(
         iim=40, jjm=30,
         clon=2.0, clat=48.0,
         grossismx=4.0, grossismy=4.0,
