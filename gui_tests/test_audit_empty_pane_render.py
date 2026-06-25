@@ -9,6 +9,12 @@ to the mesh's active scalars (i.e. whichever pane added them last).
 Fix: take a dedicated no-scalars branch that passes an explicit
 ``color`` so the pane never picks up another pane's data via the
 active-scalars fallback.
+
+The companion regression — "layout switch on empty File tab shows the
+Ico mesh in gray instead of the empty sphere" — was traced to
+``_update_scalars_only`` lazily rebuilding the mesh from the stale
+``self.verts / cells`` seed (the synthetic goldberg from ``__init__``)
+whenever ``self._mesh`` was None. The bottom test pins that down.
 """
 from __future__ import annotations
 
@@ -148,3 +154,43 @@ def test_empty_sphere_path_unaffected(make_main_window):
     )
     assert "empty" in actor_names
     assert "grid" not in actor_names
+
+
+def test_layout_switch_on_empty_file_tab_keeps_empty_sphere(make_main_window):
+    """Switching layout on a closed-file File tab must NOT re-leak the Ico mesh.
+
+    Regression: ``_update_scalars_only`` used to lazily re-create
+    ``self._mesh`` from the stale ``self.verts / cells`` seed (the
+    synthetic goldberg from ``__init__``) when called with no mesh.
+    ``_on_pane_layout`` calls ``_update_scalars_only`` per newly-visible
+    pane *before* ``_build_scene`` runs, so the lazy rebuild quietly
+    overwrote the empty-sphere state with a gray Ico mesh.
+    """
+    win = make_main_window()
+    win._on_close_file()
+    QCoreApplication.processEvents()
+    assert win._mesh is None     # invariant after close
+
+    win._on_pane_layout(4)
+    QCoreApplication.processEvents()
+
+    # _mesh must still be None — _update_scalars_only must not lazily
+    # rebuild the goldberg seed during the layout expand.
+    assert win._mesh is None, (
+        "layout switch on a closed-file File tab must not rebuild _mesh "
+        "from the synthetic goldberg seed"
+    )
+    # Every visible pane must hold the 'empty' actor, not the leaked
+    # 'grid' actor that the old behaviour would produce.
+    for i in range(win._pane_container.n_visible):
+        actor_names = set(
+            win._pane_container.pane(i).plotter.renderer.actors.keys()
+        )
+        assert "empty" in actor_names, (
+            f"pane {i + 1}: expected empty-sphere actor on a closed-file "
+            f"File tab; got actors {actor_names}"
+        )
+        assert "grid" not in actor_names, (
+            f"pane {i + 1}: leaked grid actor — the Ico mesh re-appeared "
+            f"during layout expand on the empty File tab"
+        )

@@ -594,7 +594,13 @@ class MainWindow(QMainWindow):
         layout-change re-renders).
         """
         if self._mesh is None:
-            self._mesh = self._to_polydata()
+            # No mesh = empty-sphere state (File tab without a file loaded,
+            # or just after _on_close_file / _render_empty_sphere). The
+            # caller's subsequent _build_scene will route to the empty
+            # sphere; updating scalars now would be meaningless AND would
+            # incorrectly re-create the mesh from the stale self.verts /
+            # cells seed (left over from __init__'s synthetic goldberg),
+            # leaking the Ico mesh into a fresh File-tab view.
             return
         idx = self._active_pane_idx if pane_idx is None else pane_idx
         key = self._pane_scalar_key(idx)
