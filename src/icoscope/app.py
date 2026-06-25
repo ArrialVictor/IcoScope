@@ -1344,11 +1344,10 @@ class MainWindow(QMainWindow):
             n_l = meta["n_levels"]
             ft.set_levels(self._file_state.file_levels,
                           self._file_state.file_level_units)
-            slider = block.level_slider
-            slider.blockSignals(True)
-            slider.setValue(min(max(pane.level_index, 0), n_l - 1))
-            slider.blockSignals(False)
-            ft.set_level_label(slider.value())
+            # set_level_label is the single source of truth for "go to
+            # this index" — moves the indicator marker, refreshes the
+            # caption, and pushes the value into the spinbox.
+            ft.set_level_label(min(max(pane.level_index, 0), n_l - 1))
         else:
             # No vertical dim — same logic as the time row above.
             ft.set_levels(None)
@@ -2146,10 +2145,9 @@ class MainWindow(QMainWindow):
             )
             l_idx = min(max(self._file_state.level_index, 0), n_l - 1)
             self._file_state.level_index = l_idx
-            slider = self.panel.file_tab.display.level_slider
-            slider.blockSignals(True)
-            slider.setValue(l_idx)
-            slider.blockSignals(False)
+            # set_level_label updates the indicator + spinbox together
+            # (the QSlider was removed; set_level_label is the canonical
+            # "move to this level" entry point now).
             self.panel.file_tab.set_level_label(l_idx)
         else:
             self.panel.file_tab.set_levels(None)

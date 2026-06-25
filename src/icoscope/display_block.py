@@ -10,6 +10,7 @@ forwarding its signals and exposing its setters; consumers outside
 :mod:`icoscope.tabs` should not touch a display block directly.
 """
 from qtpy.QtCore import Qt, Signal
+from qtpy.QtGui import QColor, QPainter, QPen
 from qtpy.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -19,6 +20,7 @@ from qtpy.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QSizePolicy,
     QSlider,
     QSpinBox,
     QVBoxLayout,
@@ -43,6 +45,98 @@ SYNTHETIC_UNITS = {
     "Mock temperature": "K",
     "Realistic temperature": "K",
 }
+
+
+class _LevelIndicator(QWidget):
+    """Read-only horizontal indicator: thin line + tick per level + marker.
+
+    Replaces the QSlider that used to share the level row with the
+    spinbox. The spinbox is now the sole input affordance (type a
+    value, arrow-key step); this widget shows *where in the range the
+    current level sits* and how the levels are distributed.
+
+    Ticks are positioned by VALUE, not by index, so a non-uniform
+    pressure axis (e.g. LMDZ ``presnivs`` with ~10 hPa spacing near
+    the surface but >100 hPa spacing in the stratosphere) makes the
+    irregular distribution visible at a glance. Smaller values render
+    on the left, larger on the right — universal "right = bigger"
+    convention regardless of the file's storage order; the spinbox
+    above shows the actual value so the orientation is unambiguous
+    in context.
+    """
+
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(parent)
+        # Slim — just enough vertical space for the line + tick stubs.
+        # The spinbox above already shows the value; no caption / no
+        # edge labels (they made the line look squashed on narrow
+        # panel widths).
+        self.setFixedHeight(12)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self._display_values: list[float] = []
+        self._idx = 0
+
+    def set_levels(self, display_values) -> None:
+        """Configure the line + ticks from per-level display values.
+
+        Pass an empty sequence to clear (the widget then renders nothing).
+        """
+        self._display_values = list(map(float, display_values))
+        if self._idx >= len(self._display_values):
+            self._idx = max(0, len(self._display_values) - 1)
+        self.update()
+
+    def set_index(self, idx: int) -> None:
+        """Move the marker to level index ``idx``."""
+        if 0 <= idx < len(self._display_values):
+            self._idx = idx
+            self.update()
+
+    def _x_for_value(self, value: float, plot_x0: int, plot_w: int) -> int:
+        """Map a display value to the x pixel on the indicator line.
+
+        Range is min..max of the configured display values; ascending
+        left→right. Single-value range collapses to the left edge
+        (defensive — set_levels normally rejects len<=1 upstream).
+        """
+        if not self._display_values:
+            return plot_x0
+        vmin = min(self._display_values)
+        vmax = max(self._display_values)
+        if vmax == vmin:
+            return plot_x0
+        frac = (value - vmin) / (vmax - vmin)
+        return plot_x0 + int(round(frac * plot_w))
+
+    def paintEvent(self, event) -> None:
+        if not self._display_values:
+            return
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        w = self.width()
+        margin = 6
+        plot_x0 = margin
+        plot_w = max(w - 2 * margin, 1)
+        line_y = self.height() // 2
+
+        # Track line
+        p.setPen(QPen(QColor("#666"), 1))
+        p.drawLine(plot_x0, line_y, plot_x0 + plot_w, line_y)
+
+        # Per-level ticks
+        p.setPen(QPen(QColor("#888"), 1))
+        for v in self._display_values:
+            x = self._x_for_value(v, plot_x0, plot_w)
+            p.drawLine(x, line_y - 3, x, line_y + 3)
+
+        # Current marker — accent colour, matches the pane-selection ring.
+        cur_x = self._x_for_value(
+            self._display_values[self._idx], plot_x0, plot_w)
+        marker_color = QColor("#d4a060")
+        p.setBrush(marker_color)
+        p.setPen(QPen(marker_color, 1))
+        r = 4
+        p.drawEllipse(cur_x - r, line_y - r, 2 * r, 2 * r)
 
 
 class _LevelSpinBox(QDoubleSpinBox):
@@ -148,12 +242,16 @@ class _DisplayBlock(QWidget):
         # Vertical-level state populated by set_levels:
         # - _levels_raw: the level array in the file's native units
         # - _level_units: the units attribute as a plain string (may be "")
-        # - _level_display: the parsed display config from _classify_level_unit
-        #   (factor, suffix, decimals, single-step) — all formatting +
-        #   spinbox-vs-slider conversion derives from this struct
+        # - _level_display: parsed display config from _classify_level_unit
+        #   (factor, suffix, decimals, single-step) — formatting +
+        #   spinbox-typed-value snap conversion all derive from this struct
+        # - _level_idx: source of truth for the current level (the QSlider
+        #   used to play that role; the slider is gone since the spinbox
+        #   covers all input and the _LevelIndicator covers all display)
         self._levels_raw = None
         self._level_units = ""
         self._level_display: dict | None = None
+        self._level_idx: int = 0
         v = QVBoxLayout(self)
         v.setContentsMargins(0, 0, 0, 0)
         # Group selection per mode. The animation group is split — global
@@ -368,27 +466,31 @@ class _DisplayBlock(QWidget):
         # show it.
         self._pane_mode_hides_speed_row = (self.mode == "pane")
 
-        # Vertical-level slider: shown only when the active field has a
-        # presnivs dim. Label shows the pressure value (hPa) at the current
-        # index so users can navigate by altitude, not just slider position.
+        # Vertical-level row: shown only when the active field has a
+        # presnivs dim. Three visual rows stacked vertically:
+        #   1. Label ("Level") on the left, value spinbox on the right.
+        #   2. Read-only indicator line spanning the full width — tick
+        #      per level + marker at the current one.
+        #   3. Gray caption under the indicator ("level k [VALUE]").
+        # The old QSlider was redundant once the spinbox grew arrow-key
+        # index-stepping; the indicator preserves the slider's "where
+        # am I in the range" visual + makes the non-uniform level
+        # distribution visible by positioning ticks by VALUE.
         self.level_row = QWidget()
-        lrow = QHBoxLayout(self.level_row)
-        lrow.setContentsMargins(0, 0, 0, 0)
-        lrow.setSpacing(6)
+        lrow_outer = QVBoxLayout(self.level_row)
+        lrow_outer.setContentsMargins(0, 0, 0, 0)
+        lrow_outer.setSpacing(2)
+        # Sub-row 1: label + (stretch) + spinbox
+        lrow_top = QHBoxLayout()
+        lrow_top.setContentsMargins(0, 0, 0, 0)
+        lrow_top.setSpacing(6)
         level_lbl = QLabel("Level")
         level_lbl.setFixedHeight(ROW_H)
-        lrow.addWidget(level_lbl)
-        self.level_slider = QSlider(Qt.Horizontal)
-        self.level_slider.setRange(0, 0)
-        self.level_slider.setFixedHeight(ROW_H)
-        self.level_slider.setStyleSheet(SLIDER_STYLE)
-        self.level_slider.valueChanged.connect(self._on_level_slider_changed)
-        lrow.addWidget(self.level_slider, stretch=1)
-        # Editable spinbox doubles as the value display and the type-in
-        # entry point: the user can drag the slider, or type the desired
-        # level value (e.g. "850" for the 850 hPa surface) and the slider
-        # snaps to the nearest available level. set_levels configures
-        # the range / suffix / decimals from the file's units attribute.
+        lrow_top.addWidget(level_lbl)
+        lrow_top.addStretch(1)
+        # Editable spinbox: shows the current value AND lets the user
+        # type to jump (snap to nearest); arrow keys / wheel step by
+        # exactly one level index (see _LevelSpinBox).
         self.level_value_box = _LevelSpinBox()
         # Fixed width sized for 4-digit values + suffix + spin arrows;
         # 60 px clipped "1024.0 hPa" with the old QLabel.
@@ -402,7 +504,12 @@ class _DisplayBlock(QWidget):
         # they always move by exactly one level (see _LevelSpinBox).
         self.level_value_box.levelStepRequested.connect(
             self._on_level_box_step_requested)
-        lrow.addWidget(self.level_value_box)
+        lrow_top.addWidget(self.level_value_box)
+        lrow_outer.addLayout(lrow_top)
+        # Sub-row 2: full-width indicator (no caption — the spinbox above
+        # already shows the value, the indicator just shows position).
+        self.level_indicator = _LevelIndicator()
+        lrow_outer.addWidget(self.level_indicator)
         al.addWidget(self.level_row)
         self.level_row.setVisible(False)
 
@@ -553,7 +660,7 @@ class _DisplayBlock(QWidget):
         self.play_toggled.emit(on)
 
     def set_levels(self, levels, units: str = "") -> None:
-        """Configure the level slider + spinbox from the file's level axis.
+        """Configure the level row from the file's level axis.
 
         ``levels`` is the raw values array in the file's native units;
         ``units`` is the coord variable's ``units`` attribute (``"Pa"``
@@ -565,8 +672,8 @@ class _DisplayBlock(QWidget):
         km for tall height ranges, etc.) and the typed-value path can
         snap to the nearest available level.
 
-        Pass ``None`` or a length-≤1 array to hide the slider (used
-        when the active field has no vertical dim, or when no file is
+        Pass ``None`` or a length-≤1 array to hide the row (used when
+        the active field has no vertical dim, or when no file is
         loaded). When the values look like a contiguous integer index
         sequence (subsetted file where the coord var was dropped), the
         spinbox shows raw indices.
@@ -578,6 +685,8 @@ class _DisplayBlock(QWidget):
             self._levels_raw = None
             self._level_units = ""
             self._level_display = None
+            self._level_idx = 0
+            self.level_indicator.set_levels([])
             self.level_value_box.setEnabled(False)
             self._refresh_anim_group_visibility()
             return
@@ -586,15 +695,12 @@ class _DisplayBlock(QWidget):
         self._level_units = units or ""
         self._level_display = self._classify_level_unit(
             self._levels_raw, self._level_units)
+        self._level_idx = 0
         self.level_row.setVisible(True)
         self._refresh_anim_group_visibility()
-        self.level_slider.blockSignals(True)
-        self.level_slider.setRange(0, len(self._levels_raw) - 1)
-        self.level_slider.setValue(0)
-        self.level_slider.blockSignals(False)
         # Configure the spinbox from the display config.
         d = self._level_display
-        display_values = self._levels_raw * d["factor"]
+        display_values = (self._levels_raw * d["factor"]).tolist()
         self.level_value_box.blockSignals(True)
         self.level_value_box.setDecimals(d["decimals"])
         self.level_value_box.setSingleStep(d["step"])
@@ -608,6 +714,8 @@ class _DisplayBlock(QWidget):
         self.level_value_box.setRange(lo - slack, hi + slack)
         self.level_value_box.setEnabled(True)
         self.level_value_box.blockSignals(False)
+        # Configure the indicator from the same display values.
+        self.level_indicator.set_levels(display_values)
         self.set_level_label(0)
 
     @staticmethod
@@ -666,28 +774,39 @@ class _DisplayBlock(QWidget):
                 "decimals": 3, "step": max(max_abs / 100.0, 1e-3)}
 
     def set_level_label(self, idx: int) -> None:
-        """Push level index ``idx``'s display value into the spinbox."""
+        """Move the level row to index ``idx`` without emitting level_changed.
+
+        Updates the indicator marker, the indicator caption, and the
+        spinbox display value. Does not fire ``level_changed`` — used
+        by external callers that are syncing the widget to state
+        already mutated elsewhere (e.g. ``_activate_file_view`` after
+        a file open). The spinbox-driven paths
+        (:meth:`_on_level_box_value_changed`,
+        :meth:`_on_level_box_step_requested`) call this then emit on
+        their own.
+        """
         if (not self.with_time or self._levels_raw is None
                 or self._level_display is None):
             return
         if not (0 <= idx < len(self._levels_raw)):
             return
-        display_val = float(self._levels_raw[idx]) * self._level_display["factor"]
+        self._level_idx = idx
+        d = self._level_display
+        display_val = float(self._levels_raw[idx]) * d["factor"]
+        # Spinbox: show the snapped value (blocked so we don't re-enter
+        # _on_level_box_value_changed).
         self.level_value_box.blockSignals(True)
         self.level_value_box.setValue(display_val)
         self.level_value_box.blockSignals(False)
-
-    def _on_level_slider_changed(self, idx: int) -> None:
-        self.set_level_label(idx)
-        self.level_changed.emit(idx)
+        # Indicator: move the marker.
+        self.level_indicator.set_index(idx)
 
     def _on_level_box_value_changed(self, display_val: float) -> None:
-        """User typed a level value — snap the slider to the nearest match.
+        """User typed a level value — snap to nearest level and emit.
 
-        Updates the spinbox back to the snapped value (so the user sees
-        what they got) and emits ``level_changed`` so downstream code
-        re-renders. blockSignals around both child writes to avoid
-        re-entry into this handler.
+        ``set_level_label`` writes the snapped value back into the
+        spinbox (blocked) so the user sees exactly which level they
+        landed on, not their guess.
         """
         if self._levels_raw is None or self._level_display is None:
             return
@@ -696,15 +815,7 @@ class _DisplayBlock(QWidget):
         # nearest level by absolute distance in the file's own scale.
         target_raw = display_val / self._level_display["factor"]
         idx = int(np.argmin(np.abs(self._levels_raw - target_raw)))
-        self.level_slider.blockSignals(True)
-        self.level_slider.setValue(idx)
-        self.level_slider.blockSignals(False)
-        # Snap the spinbox display back to the actual level value (so the
-        # user sees exactly which level they landed on, not their guess).
-        snapped = float(self._levels_raw[idx]) * self._level_display["factor"]
-        self.level_value_box.blockSignals(True)
-        self.level_value_box.setValue(snapped)
-        self.level_value_box.blockSignals(False)
+        self.set_level_label(idx)
         self.level_changed.emit(idx)
 
     def _on_level_box_step_requested(self, steps: int) -> None:
@@ -720,32 +831,26 @@ class _DisplayBlock(QWidget):
         leave the user stuck at a "wall" (the bug the dedicated path
         was added to fix).
         """
-        if self._levels_raw is None or self._level_display is None:
-            return
-        if len(self._levels_raw) == 0:
+        if (self._levels_raw is None or self._level_display is None
+                or len(self._levels_raw) == 0):
             return
         import numpy as np
-        cur_idx = self.level_slider.value()
+        cur_idx = self._level_idx
         all_display = (
             np.asarray(self._levels_raw, dtype=float)
             * self._level_display["factor"]
         )
         cur_display = float(all_display[cur_idx])
         if steps > 0:
-            # User wants a HIGHER display value — find the smallest
-            # display value that's still strictly greater than current.
             mask = all_display > cur_display
             if not mask.any():
                 return
-            higher = all_display[mask]
-            new_display = float(np.min(higher))
+            new_display = float(np.min(all_display[mask]))
         else:
             mask = all_display < cur_display
             if not mask.any():
                 return
-            lower = all_display[mask]
-            new_display = float(np.max(lower))
+            new_display = float(np.max(all_display[mask]))
         new_idx = int(np.argmin(np.abs(all_display - new_display)))
-        # Route through the slider so the existing slider-driven path
-        # (set_level_label + level_changed emit) runs once.
-        self.level_slider.setValue(new_idx)
+        self.set_level_label(new_idx)
+        self.level_changed.emit(new_idx)
